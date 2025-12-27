@@ -87,6 +87,33 @@ if (eax > 5) {
 
 이 프로젝트는 NASM과 Linker (ld)를 사용합니다.
 
+## File Structure
+
+```text
+.
+├── README.md
+├── basm.asm
+├── include/
+│   ├── consts.inc
+│   └── macros.inc
+├── src/
+│   ├── backend.inc
+│   ├── cli.inc
+│   ├── elf64.inc
+│   ├── ir.inc
+│   ├── lexer.inc
+│   ├── parser.inc
+│   └── util.inc
+├── examples/
+│   └── hello.bpp
+└── .gitignore
+```
+
+- `basm.asm`: 엔트리 포인트. 각 모듈을 `%include`로 묶습니다.
+- `include/`: 공용 상수/매크로.
+- `src/`: CLI/파서/IR/백엔드/ELF64 등 단계별 모듈.
+- `examples/`: (향후) Basm/Bpp 예제 코드.
+
 
 ### 1. Assemble the compiler
 ```Bash

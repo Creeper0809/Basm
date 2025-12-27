@@ -1,0 +1,6 @@
+# Build outputs
+*.o
+basm
+output
+output.o
+output.asm
