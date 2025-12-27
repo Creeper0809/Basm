@@ -159,7 +159,7 @@ basm-cc ./examples/hello.b                 # stdout으로 asm 출력
 basm-cc ./examples/hello.b -o /tmp/out.asm
 ```
 
-설치 직후에 `basm`이 이상한 경로를 찾는다면(과거 경로 캐시), 아래로 쉘 캐시를 갱신하세요:
+설치 직후에 `basm`이 이상한 경로를 찾는다면(과거 경로 캐시), 아래로 쉘 캐시를 갱신:
 ```bash
 hash -r
 ```
