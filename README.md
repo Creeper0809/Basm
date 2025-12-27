@@ -87,12 +87,24 @@ if (eax > 5) {
 
 이 프로젝트는 NASM과 Linker (ld)를 사용합니다.
 
+현재 구성은 gcc처럼 쓰기 위해 2개의 바이너리를 둡니다.
+
+- `basm`: 드라이버(컴파일 → 조립/링크 → 실행까지 자동)
+- `basm-cc`: 컴파일러(입력 `.b` → NASM asm 텍스트 생성)
+
+레포 로컬 빌드 시:
+
+- `build/basm` = `basm-cc` 역할
+- `build/basm_driver` = `basm` 역할
+
 ## File Structure
 
 ```text
 .
 ├── README.md
+├── Makefile
 ├── basm.asm
+├── build/             # 산출물(basm.o, basm)
 ├── include/
 │   ├── consts.inc
 │   └── macros.inc
@@ -104,31 +116,50 @@ if (eax > 5) {
 │   ├── lexer.inc
 │   ├── parser.inc
 │   └── util.inc
+├── tools/
+│   └── basm_driver.c   # gcc 링커 드라이버 매핑 
 ├── examples/
-│   └── hello.bpp
+│   └── hello.b         # 예시 b 언어
 └── .gitignore
 ```
 
 - `basm.asm`: 엔트리 포인트. 각 모듈을 `%include`로 묶습니다.
 - `include/`: 공용 상수/매크로.
 - `src/`: CLI/파서/IR/백엔드/ELF64 등 단계별 모듈.
-- `examples/`: (향후) Basm/Bpp 예제 코드.
+- `examples/`: Basm/Bpp 예제 코드.
+- `build/`: 컴파일러 빌드 산출물.
 
 
-### 1. Assemble the compiler
-```Bash
-nasm -f elf64 basm.asm -o basm.o
-ld basm.o -o basm
+### 1) Build (Makefile 권장)
+```bash
+make build
 ```
 
-### 2. Compile your Bpp code using Basm
-```Bash
-./basm source.bpp -o output.asm
-nasm -f elf64 output.asm -o output.o
-ld output.o -o output
+짧게 실행까지 하고 싶으면 (두 번째 인자를 입력 파일로 받습니다):
+```bash
+make run examples/hello.b
 ```
 
-### 3. Run!
-```Bash
-./output
+### 2) 컴파일러만 사용하기 (ASM 생성)
+`-o`를 주면 파일로도 저장됩니다.
+```bash
+./build/basm examples/hello.b              # stdout으로 asm 출력
+./build/basm examples/hello.b -o /tmp/out.asm
+```
+
+### 4) (옵션) basm 커맨드로 설치
+`~/.local/bin/basm`로 설치합니다.
+```bash
+make install
+export PATH="$HOME/.local/bin:$PATH"   # 필요 시
+basm examples/hello.b
+
+# 설치된 컴파일러를 직접 쓰고 싶으면
+basm-cc ./examples/hello.b                 # stdout으로 asm 출력
+basm-cc ./examples/hello.b -o /tmp/out.asm
+```
+
+설치 직후에 `basm`이 이상한 경로를 찾는다면(과거 경로 캐시), 아래로 쉘 캐시를 갱신하세요:
+```bash
+hash -r
 ```

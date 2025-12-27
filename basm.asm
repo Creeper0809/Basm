@@ -1,10 +1,9 @@
-; Basm - Stage 1 (skeleton)
-; Main entrypoint. Modules are stubbed for now.
-
 BITS 64
 DEFAULT REL
 
 global _start
+
+%define FILE_BUF_MAX 1048576
 
 %include "include/consts.inc"
 %include "include/macros.inc"
@@ -20,8 +19,53 @@ global _start
 section .text
 
 _start:
-    ; TODO: parse argv, compile source.bpp to output.asm
-    ; For now, exit(0) so the toolchain wiring is valid.
-    mov rax, SYS_exit
+    mov rdi, [rsp]        ; argc
+    lea rsi, [rsp + 8]    ; argv
+    call cli_parse
+
+    ; read input file
+    call cli_get_input_path
+    mov rdi, rax                  ; path
+    lea rsi, [rel file_buf]       ; buf
+    mov rdx, FILE_BUF_MAX         ; max
+    call util_read_file
+    mov r12, rax                  ; len
+
+    ; lexer sanity check
+    lea rdi, [rel file_buf]
+    mov rsi, r12
+    call lexer_validate
+
+    call ir_reset
+
+    ; parse and build IR
+    lea rdi, [rel file_buf]
+    mov rsi, r12
+    call parse_program
+
+    ; optionally write output.asm if -o was provided
+    call cli_get_output_path
+    test rax, rax
+    jz .skip_file_output
+
+    mov rdi, rax
+    call util_open_write_trunc
+    mov r13, rax                  ; fd
+
+    mov rdi, r13
+    call backend_emit_program
+
+    mov rdi, r13
+    call util_close
+
+.skip_file_output:
+
+    ; also print generated asm to stdout
+    mov rdi, FD_stdout
+    call backend_emit_program
+
     xor rdi, rdi
-    syscall
+    call util_exit
+
+section .bss
+file_buf: resb FILE_BUF_MAX
