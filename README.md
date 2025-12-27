@@ -24,7 +24,7 @@ Basm의 철학은 단순합니다.
 
 - High-Level Assembly: 어셈블리어의 제어권 + C언어의 가독성.
 
-- Explicit Registers: eax, r8을 직접 제어한다.
+- Explicit Registers: eax, r8등을 직접 제어한다.
 
 ## Syntax Preview
 
