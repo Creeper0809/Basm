@@ -28,8 +28,6 @@ Basm의 철학은 단순합니다.
 
 ## Syntax Preview
 
-인라인 어셈블리의 고통에서 해방되십시오.
-
 Traditional C + Inline Assembly (Painful):
 ```C
 
