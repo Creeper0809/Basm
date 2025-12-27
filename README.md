@@ -83,20 +83,6 @@ if (eax > 5) {
 
     [ ] Stage 3: World Domination (Replacing PHP)
 
-## Build & Run
-
-이 프로젝트는 NASM과 Linker (ld)를 사용합니다.
-
-현재 구성은 gcc처럼 쓰기 위해 2개의 바이너리를 둡니다.
-
-- `basm`: 드라이버(컴파일 → 조립/링크 → 실행까지 자동)
-- `basm-cc`: 컴파일러(입력 `.b` → NASM asm 텍스트 생성)
-
-레포 로컬 빌드 시:
-
-- `build/basm` = `basm-cc` 역할
-- `build/basm_driver` = `basm` 역할
-
 ## File Structure
 
 ```text
@@ -128,6 +114,20 @@ if (eax > 5) {
 - `src/`: CLI/파서/IR/백엔드/ELF64 등 단계별 모듈.
 - `examples/`: Basm/Bpp 예제 코드.
 - `build/`: 컴파일러 빌드 산출물.
+
+## Build & Run
+
+이 프로젝트는 NASM과 Linker (ld)를 사용합니다.
+
+현재 구성은 gcc처럼 쓰기 위해 2개의 바이너리를 둡니다.
+
+- `basm`: 드라이버(컴파일 → 조립/링크 → 실행까지 자동)
+- `basm-cc`: 컴파일러(입력 `.b` → NASM asm 텍스트 생성)
+
+레포 로컬 빌드 시:
+
+- `build/basm` = `basm-cc` 역할
+- `build/basm_driver` = `basm` 역할
 
 
 ### 1) Build (Makefile 권장)
