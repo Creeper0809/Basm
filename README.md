@@ -98,7 +98,6 @@ if (eax > 5) {
 │   ├── emitter.inc
 │   ├── cli.inc
 │   ├── elf64.inc
-│   ├── ir.inc
 │   ├── lexer.inc
 │   ├── parser.inc
 │   └── util.inc
