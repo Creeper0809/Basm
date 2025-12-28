@@ -1,18 +1,9 @@
 section .text
 
-; Stage 1 parser (Milestone 0):
-;   func main(<args>){ var a; var b; }
-; No statements yet; just emits a valid NASM program skeleton.
-
 parse_program:
-	; init lexer on input buffer
-	; rdi=buf, rsi=len
 	call lexer_init
 
-	; no functions seen yet
 	mov qword [parser_seen_main], 0
-
-	; top-level global var declarations: var name;
 .glob_loop:
 	call lexer_peek
 	cmp rax, TOK_KW_VAR
@@ -20,11 +11,8 @@ parse_program:
 	call parser_parse_global_var_decl
 	jmp .glob_loop
 .after_globs:
-
-	; start text section and _start shim now (after global .data)
 	call emit_start_shim
 
-	; parse one or more functions
 .func_loop:
 	call lexer_peek
 	cmp rax, TOK_KW_FUNC
@@ -33,7 +21,6 @@ parse_program:
 	jmp .func_loop
 
 .after_funcs:
-	; require a main
 	mov rax, [parser_seen_main]
 	test rax, rax
 	jnz .have_main
@@ -41,14 +28,11 @@ parse_program:
 	mov rsi, 1
 	call util_fatal_line
 .have_main:
-
-	; EOF
 	call lexer_peek
 	cmp rax, TOK_EOF
 	jne parser_err_expected_eof
 	ret
 
-; Parses: func <ident>(<args>) { <vars>* <stmts>* }
 parser_parse_func:
 	push rbp
 	mov rbp, rsp

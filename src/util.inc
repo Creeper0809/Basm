@@ -1,5 +1,3 @@
-; Utilities
-
 section .text
 
 ; rdi = exit_code

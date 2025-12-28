@@ -1,19 +1,5 @@
 section .text
 
-; ================================
-; Stage 1 lexer (tokenizer)
-;
-; Rules:
-; - Whitespace and '//' comments are consumed here.
-; - Line counting: increment on '\n' (0x0A), treat '\r' (0x0D) as whitespace.
-; - Parser sees only meaningful tokens.
-;
-; Token record (in .bss):
-;   lexer_tok_kind  : qword
-;   lexer_tok_ptr   : qword
-;   lexer_tok_len   : qword
-;   lexer_tok_line  : qword (1-based)
-
 %define TOK_EOF      0
 %define TOK_IDENT    1
 %define TOK_KW_FUNC  2
@@ -572,7 +558,6 @@ lexer_skip_ws_and_comments:
 	jae .done
 	mov al, [rdi + rcx]
 
-	; comment begins with '//' anywhere
 	; comment begins with '//' anywhere
 	cmp al, '/'
 	jne .ws
