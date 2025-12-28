@@ -85,6 +85,51 @@ util_fatal:
 	mov rdi, 1
 	call util_exit
 
+; rdi = zero-terminated message, rsi = 1-based line number
+; prints: "error at line <n>: <msg>" then exits(1)
+util_fatal_line:
+	push rbp
+	mov rbp, rsp
+	push r12
+	push r13
+
+	mov r12, rdi            ; msg
+	mov r13, rsi            ; line
+
+	; prefix
+	lea rdi, [rel util_msg_line_prefix]
+	call util_strlen
+	mov rdi, FD_stderr
+	lea rsi, [rel util_msg_line_prefix]
+	mov rdx, rax
+	call util_write_all
+
+	; line number
+	mov rdi, r13
+	lea rsi, [rel util_line_num_buf + 32]
+	call util_u64_to_dec
+	; rax=start, rdx=len
+	mov rdi, FD_stderr
+	mov rsi, rax
+	call util_write_all
+
+	; ": "
+	mov rdi, FD_stderr
+	lea rsi, [rel util_msg_line_mid]
+	mov rdx, util_msg_line_mid_len
+	call util_write_all
+
+	; message
+	mov rdi, r12
+	call util_strlen
+	mov rdi, FD_stderr
+	mov rsi, r12
+	mov rdx, rax
+	call util_write_all
+
+	mov rdi, 1
+	call util_exit
+
 util_print_usage:
 	lea rdi, [rel util_msg_usage]
 	call util_print_stderr
@@ -106,15 +151,6 @@ util_close:
 	syscall
 	ret
 
-; util_u64_to_dec
-;   Converts unsigned integer to decimal ASCII (no NUL terminator required).
-;
-; Inputs:
-;   rdi = value
-;   rsi = end pointer (buffer end, write backwards)
-; Outputs:
-;   rax = start pointer
-;   rdx = length
 util_u64_to_dec:
 	push rbp
 	mov rbp, rsp
@@ -226,3 +262,10 @@ util_msg_usage: db "usage: basm <input.b> [-o <output.asm>]",10,0
 util_msg_open_fail: db "error: failed to open file",10,0
 util_msg_read_fail: db "error: failed to read file",10,0
 util_msg_write_fail: db "error: failed to write file",10,0
+
+util_msg_line_prefix: db "error at line ",0
+util_msg_line_mid: db ": ",0
+util_msg_line_mid_len: equ 2
+
+section .bss
+util_line_num_buf: resb 32

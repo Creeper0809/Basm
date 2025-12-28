@@ -11,9 +11,7 @@ global _start
 %include "src/cli.inc"
 %include "src/lexer.inc"
 %include "src/parser.inc"
-%include "src/ir.inc"
-%include "src/backend.inc"
-%include "src/elf64.inc"
+%include "src/emitter.inc"
 %include "src/util.inc"
 
 section .text
@@ -36,9 +34,8 @@ _start:
     mov rsi, r12
     call lexer_validate
 
-    call ir_reset
-
-    ; parse and build IR
+    ; reset emitter and parse-and-emit
+    call emit_reset
     lea rdi, [rel file_buf]
     mov rsi, r12
     call parse_program
@@ -53,7 +50,7 @@ _start:
     mov r13, rax                  ; fd
 
     mov rdi, r13
-    call backend_emit_program
+    call emit_flush
 
     mov rdi, r13
     call util_close
@@ -62,7 +59,7 @@ _start:
 
     ; also print generated asm to stdout
     mov rdi, FD_stdout
-    call backend_emit_program
+    call emit_flush
 
     xor rdi, rdi
     call util_exit
