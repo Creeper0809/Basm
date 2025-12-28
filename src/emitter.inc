@@ -1,8 +1,3 @@
-; Stage 1 emitter (no IR)
-;
-; Owns an in-memory output buffer so we can flush the exact same
-; generated NASM text to stdout and optional -o file.
-
 %ifndef EMIT_BUF_MAX
 %define EMIT_BUF_MAX 1048576
 %endif
