@@ -4,3 +4,6 @@ basm
 output
 output.o
 output.asm
+
+# Local dev logs
+page/
