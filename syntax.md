@@ -256,7 +256,7 @@ if (rbx >= 64) { r11 = 222; }
 
 ## 9) 한 파일로 기능 확인하기
 
-현재 구현된 대부분의 기능은 [examples/hello.b](../examples/hello.b)에서 한 번에 볼 수 있습니다.
+현재 구현된 대부분의 기능은 [examples/hello.b](/examples/hello.b)에서 한 번에 볼 수 있습니다.
 
 ---
 
