@@ -6,6 +6,7 @@ section .bss
 emit_buf:      resb EMIT_BUF_MAX
 emit_cur:      resq 1
 emit_data_emitted: resq 1
+emit_bss_emitted:  resq 1
 
 section .text
 
@@ -14,6 +15,7 @@ emit_reset:
 	lea rax, [rel emit_buf]
 	mov [emit_cur], rax
 	mov qword [emit_data_emitted], 0
+	mov qword [emit_bss_emitted], 0
 
 	; header (includes ABI note for print_dec)
 	lea rsi, [rel emit_hdr]
@@ -46,6 +48,17 @@ emit_text_section:
 	call emit_append
 	ret
 
+emit_bss_begin_once:
+	mov rax, [emit_bss_emitted]
+	test rax, rax
+	jnz .emit
+	mov qword [emit_bss_emitted], 1
+.emit:
+	lea rsi, [rel emit_bss_section]
+	mov rdx, emit_bss_section_len
+	call emit_append
+	ret
+
 ; rdi=name_ptr, rsi=name_len
 emit_global_dq0:
 	push rbp
@@ -66,6 +79,76 @@ emit_global_dq0:
 	; ": dq 0\n"
 	lea rsi, [rel emit_dq0_suffix]
 	mov rdx, emit_dq0_suffix_len
+	call emit_append
+
+	pop r13
+	pop r12
+	pop rbp
+	ret
+
+; rdi=name_ptr, rsi=name_len, rdx=size_ptr, rcx=size_len
+emit_global_resb:
+	push rbp
+	mov rbp, rsp
+	push r12
+	push r13
+	push r14
+	push r15
+
+	mov r12, rdi
+	mov r13, rsi
+	mov r14, rdx
+	mov r15, rcx
+
+	call emit_bss_begin_once
+
+	; <name>
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	; ": resb "
+	lea rsi, [rel emit_resb_mid]
+	mov rdx, emit_resb_mid_len
+	call emit_append
+
+	; <size>
+	mov rsi, r14
+	mov rdx, r15
+	call emit_append
+
+	; "\n"
+	lea rsi, [rel emit_nl]
+	mov rdx, 1
+	call emit_append
+
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+	pop rbp
+	ret
+
+; rdi=imm_ptr, rsi=imm_len
+emit_sub_rsp_imm:
+	push rbp
+	mov rbp, rsp
+	push r12
+	push r13
+
+	mov r12, rdi
+	mov r13, rsi
+
+	lea rsi, [rel emit_sub_rsp_prefix]
+	mov rdx, emit_sub_rsp_prefix_len
+	call emit_append
+
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	lea rsi, [rel emit_nl]
+	mov rdx, 1
 	call emit_append
 
 	pop r13
@@ -178,6 +261,65 @@ emit_main_epilogue:
 	call emit_append
 	ret
 
+; rdi=label_ptr, rsi=label_len
+emit_label:
+	push rbp
+	mov rbp, rsp
+	push r12
+	push r13
+
+	mov r12, rdi
+	mov r13, rsi
+
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	lea rsi, [rel emit_label_suffix]
+	mov rdx, emit_label_suffix_len
+	call emit_append
+
+	pop r13
+	pop r12
+	pop rbp
+	ret
+
+; rdi=cc_ptr, rsi=cc_len, rdx=label_ptr, rcx=label_len
+; emits: "    j" + cc + " " + label + "\n"
+emit_jcc:
+	push rbp
+	mov rbp, rsp
+	PUSH_R12_R15
+
+	mov r12, rdi
+	mov r13, rsi
+	mov r14, rdx
+	mov r15, rcx
+
+	lea rsi, [rel emit_j_prefix]
+	mov rdx, emit_j_prefix_len
+	call emit_append
+
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	lea rsi, [rel emit_set_mid]
+	mov rdx, emit_set_mid_len
+	call emit_append
+
+	mov rsi, r14
+	mov rdx, r15
+	call emit_append
+
+	lea rsi, [rel emit_nl]
+	mov rdx, 1
+	call emit_append
+
+	POP_R15_R12
+	pop rbp
+	ret
+
 ; rdi=reg_ptr, rsi=reg_len, rdx=imm_ptr, rcx=imm_len
 emit_mov_reg_imm:
 	push rbp
@@ -234,6 +376,170 @@ emit_mov_reg_reg:
 
 	lea rsi, [rel emit_mov_mid]
 	mov rdx, emit_mov_mid_len
+	call emit_append
+
+	mov rsi, r14
+	mov rdx, r15
+	call emit_append
+
+	lea rsi, [rel emit_nl]
+	mov rdx, 1
+	call emit_append
+
+	POP_R15_R12
+	pop rbp
+	ret
+
+; rdi=dst_ptr, rsi=dst_len, rdx=src_ptr, rcx=src_len
+; r8=op_ptr, r9=op_len (e.g. "    add ")
+emit_binop_reg_src:
+	push rbp
+	mov rbp, rsp
+	PUSH_R12_R15
+	push rbx
+
+	mov r12, rdi
+	mov r13, rsi
+	mov r14, rdx
+	mov r15, rcx
+	mov rbx, r8
+
+	; op
+	mov rsi, rbx
+	mov rdx, r9
+	call emit_append
+
+	; dst
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	; ", "
+	lea rsi, [rel emit_mov_mid]
+	mov rdx, emit_mov_mid_len
+	call emit_append
+
+	; src
+	mov rsi, r14
+	mov rdx, r15
+	call emit_append
+
+	; "\n"
+	lea rsi, [rel emit_nl]
+	mov rdx, 1
+	call emit_append
+
+	pop rbx
+	POP_R15_R12
+	pop rbp
+	ret
+
+; wrappers: dst op reg
+; rdi=dst_ptr,rsi=dst_len,rdx=src_ptr,rcx=src_len
+emit_add_reg_reg:
+	lea r8, [rel emit_add_prefix]
+	mov r9, emit_add_prefix_len
+	jmp emit_binop_reg_src
+
+emit_sub_reg_reg:
+	lea r8, [rel emit_sub_prefix]
+	mov r9, emit_sub_prefix_len
+	jmp emit_binop_reg_src
+
+emit_imul_reg_reg:
+	lea r8, [rel emit_imul_prefix]
+	mov r9, emit_imul_prefix_len
+	jmp emit_binop_reg_src
+
+emit_and_reg_reg:
+	lea r8, [rel emit_and_prefix]
+	mov r9, emit_and_prefix_len
+	jmp emit_binop_reg_src
+
+emit_or_reg_reg:
+	lea r8, [rel emit_or_prefix]
+	mov r9, emit_or_prefix_len
+	jmp emit_binop_reg_src
+
+emit_xor_reg_reg:
+	lea r8, [rel emit_xor_prefix]
+	mov r9, emit_xor_prefix_len
+	jmp emit_binop_reg_src
+
+emit_shl_reg_imm:
+	lea r8, [rel emit_shl_prefix]
+	mov r9, emit_shl_prefix_len
+	jmp emit_binop_reg_src
+
+emit_shr_reg_imm:
+	lea r8, [rel emit_shr_prefix]
+	mov r9, emit_shr_prefix_len
+	jmp emit_binop_reg_src
+
+emit_cmp_reg_reg:
+	lea r8, [rel emit_cmp_prefix]
+	mov r9, emit_cmp_prefix_len
+	jmp emit_binop_reg_src
+
+; wrappers: dst op imm (imm is also passed as slice)
+; reuse same helper
+emit_add_reg_imm:
+	lea r8, [rel emit_add_prefix]
+	mov r9, emit_add_prefix_len
+	jmp emit_binop_reg_src
+
+emit_sub_reg_imm:
+	lea r8, [rel emit_sub_prefix]
+	mov r9, emit_sub_prefix_len
+	jmp emit_binop_reg_src
+
+emit_imul_reg_imm:
+	lea r8, [rel emit_imul_prefix]
+	mov r9, emit_imul_prefix_len
+	jmp emit_binop_reg_src
+
+emit_and_reg_imm:
+	lea r8, [rel emit_and_prefix]
+	mov r9, emit_and_prefix_len
+	jmp emit_binop_reg_src
+
+emit_or_reg_imm:
+	lea r8, [rel emit_or_prefix]
+	mov r9, emit_or_prefix_len
+	jmp emit_binop_reg_src
+
+emit_xor_reg_imm:
+	lea r8, [rel emit_xor_prefix]
+	mov r9, emit_xor_prefix_len
+	jmp emit_binop_reg_src
+
+emit_cmp_reg_imm:
+	lea r8, [rel emit_cmp_prefix]
+	mov r9, emit_cmp_prefix_len
+	jmp emit_binop_reg_src
+
+; rdi=cc_ptr, rsi=cc_len, rdx=reg8_ptr, rcx=reg8_len
+; emits: "    set" + cc + " " + reg8 + "\n"
+emit_setcc_reg8:
+	push rbp
+	mov rbp, rsp
+	PUSH_R12_R15
+
+	mov r12, rdi
+	mov r13, rsi
+	mov r14, rdx
+	mov r15, rcx
+
+	lea rsi, [rel emit_set_prefix]
+	mov rdx, emit_set_prefix_len
+	call emit_append
+
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	lea rsi, [rel emit_set_mid]
+	mov rdx, emit_set_mid_len
 	call emit_append
 
 	mov rsi, r14
@@ -577,6 +883,42 @@ emit_text_section_txt: db "section .text",10
 emit_text_section_txt_len: equ $-emit_text_section_txt
 emit_dq0_suffix: db ": dq 0",10
 emit_dq0_suffix_len: equ $-emit_dq0_suffix
+
+emit_bss_section: db "section .bss",10
+emit_bss_section_len: equ $-emit_bss_section
+
+emit_resb_mid: db ": resb "
+emit_resb_mid_len: equ $-emit_resb_mid
+
+emit_sub_rsp_prefix: db "    sub rsp, "
+emit_sub_rsp_prefix_len: equ $-emit_sub_rsp_prefix
+
+emit_add_prefix:  db "    add "
+emit_add_prefix_len: equ $-emit_add_prefix
+emit_sub_prefix:  db "    sub "
+emit_sub_prefix_len: equ $-emit_sub_prefix
+emit_imul_prefix: db "    imul "
+emit_imul_prefix_len: equ $-emit_imul_prefix
+emit_and_prefix:  db "    and "
+emit_and_prefix_len: equ $-emit_and_prefix
+emit_or_prefix:   db "    or "
+emit_or_prefix_len: equ $-emit_or_prefix
+emit_xor_prefix:  db "    xor "
+emit_xor_prefix_len: equ $-emit_xor_prefix
+emit_shl_prefix:  db "    shl "
+emit_shl_prefix_len: equ $-emit_shl_prefix
+emit_shr_prefix:  db "    shr "
+emit_shr_prefix_len: equ $-emit_shr_prefix
+emit_cmp_prefix:  db "    cmp "
+emit_cmp_prefix_len: equ $-emit_cmp_prefix
+
+emit_set_prefix: db "    set"
+emit_set_prefix_len: equ $-emit_set_prefix
+emit_set_mid: db " "
+emit_set_mid_len: equ $-emit_set_mid
+
+emit_j_prefix: db "    j"
+emit_j_prefix_len: equ $-emit_j_prefix
 
 emit_call_prefix: db "    call "
 emit_call_prefix_len: equ $-emit_call_prefix

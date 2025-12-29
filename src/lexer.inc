@@ -21,6 +21,32 @@ section .text
 %define TOK_KW_PTR64 18
 %define TOK_STR    19
 
+%define TOK_KW_IF   40
+
+; operators (Stage1: minimal but explicit)
+%define TOK_STAR   20
+%define TOK_AND    21
+%define TOK_OR     22
+%define TOK_XOR    23
+%define TOK_LT     24
+%define TOK_GT     25
+%define TOK_EQEQ   26
+%define TOK_NE     27
+%define TOK_LE     28
+%define TOK_GE     29
+%define TOK_SHL    30
+%define TOK_SHR    31
+
+; compound assignment
+%define TOK_PLUSEQ  32
+%define TOK_MINUSEQ 33
+%define TOK_STAREQ  34
+%define TOK_ANDEQ   35
+%define TOK_OREQ    36
+%define TOK_XOREQ   37
+%define TOK_SHLEQ   38
+%define TOK_SHREQ   39
+
 section .bss
 lexer_buf_ptr:  resq 1
 lexer_buf_len:  resq 1
@@ -77,15 +103,29 @@ lexer_next:
 	cmp al, ','
 	je lexer_make_comma
 	cmp al, '='
-	je lexer_make_eq
+	je lexer_make_eq_or_eqeq
 	cmp al, '['
 	je lexer_make_lbrack
 	cmp al, ']'
 	je lexer_make_rbrack
 	cmp al, '+'
-	je lexer_make_plus
+	je lexer_make_plus_or_pluseq
 	cmp al, '-'
-	je lexer_make_minus
+	je lexer_make_minus_or_minuseq
+	cmp al, '*'
+	je lexer_make_star_or_stareq
+	cmp al, '&'
+	je lexer_make_and_or_andeq
+	cmp al, '|'
+	je lexer_make_or_or_oreq
+	cmp al, '^'
+	je lexer_make_xor_or_xoreq
+	cmp al, '!'
+	je lexer_make_bang_or_ne
+	cmp al, '<'
+	je lexer_make_lt_family
+	cmp al, '>'
+	je lexer_make_gt_family
 
 	; string literal
 	cmp al, '"'
@@ -112,6 +152,295 @@ lexer_next:
 	jbe lexer_read_ident
 
 	jmp lexer_err_bad_char
+
+; ====== multi/single-char operator makers ======
+
+lexer_make_eq_or_eqeq:
+	; '=' or '=='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_eq
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_eq
+	; '=='
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_EQEQ
+	mov rax, TOK_EQEQ
+	ret
+
+lexer_make_plus_or_pluseq:
+	; '+' or '+='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_plus
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_plus
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_PLUSEQ
+	mov rax, TOK_PLUSEQ
+	ret
+
+lexer_make_minus_or_minuseq:
+	; '-' or '-='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_minus
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_minus
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_MINUSEQ
+	mov rax, TOK_MINUSEQ
+	ret
+
+lexer_make_star_or_stareq:
+	; '*' or '*='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_star
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_star
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_STAREQ
+	mov rax, TOK_STAREQ
+	ret
+
+lexer_make_and_or_andeq:
+	; '&' or '&='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_and
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_and
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_ANDEQ
+	mov rax, TOK_ANDEQ
+	ret
+
+lexer_make_or_or_oreq:
+	; '|' or '|='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_or
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_or
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_OREQ
+	mov rax, TOK_OREQ
+	ret
+
+lexer_make_xor_or_xoreq:
+	; '^' or '^='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_make_xor
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_make_xor
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_XOREQ
+	mov rax, TOK_XOREQ
+	ret
+
+lexer_make_bang_or_ne:
+	; only supports '!='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	cmp r8, rdx
+	jae lexer_err_bad_char
+	mov rdi, [lexer_buf_ptr]
+	mov al, [rdi + r8]
+	cmp al, '='
+	jne lexer_err_bad_char
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_NE
+	mov rax, TOK_NE
+	ret
+
+lexer_make_lt_family:
+	; '<' '<=' '<<' '<<='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	mov rdi, [lexer_buf_ptr]
+	cmp r8, rdx
+	jae lexer_make_lt
+	mov al, [rdi + r8]
+	cmp al, '='
+	je .le
+	cmp al, '<'
+	je .shl
+	jmp lexer_make_lt
+.le:
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_LE
+	mov rax, TOK_LE
+	ret
+.shl:
+	; '<<' or '<<='
+	lea r9, [rcx + 2]
+	cmp r9, rdx
+	jae .just_shl
+	mov al, [rdi + r9]
+	cmp al, '='
+	jne .just_shl
+	add qword [lexer_idx], 3
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 3
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_SHLEQ
+	mov rax, TOK_SHLEQ
+	ret
+.just_shl:
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_SHL
+	mov rax, TOK_SHL
+	ret
+
+lexer_make_gt_family:
+	; '>' '>=' '>>' '>>='
+	mov rcx, [lexer_idx]
+	mov rdx, [lexer_buf_len]
+	lea r8, [rcx + 1]
+	mov rdi, [lexer_buf_ptr]
+	cmp r8, rdx
+	jae lexer_make_gt
+	mov al, [rdi + r8]
+	cmp al, '='
+	je .ge
+	cmp al, '>'
+	je .shr
+	jmp lexer_make_gt
+.ge:
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_GE
+	mov rax, TOK_GE
+	ret
+.shr:
+	; '>>' or '>>='
+	lea r9, [rcx + 2]
+	cmp r9, rdx
+	jae .just_shr
+	mov al, [rdi + r9]
+	cmp al, '='
+	jne .just_shr
+	add qword [lexer_idx], 3
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 3
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_SHREQ
+	mov rax, TOK_SHREQ
+	ret
+.just_shr:
+	add qword [lexer_idx], 2
+	mov qword [lexer_bol], 0
+	lea rax, [rdi + rcx]
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov rax, [lexer_line]
+	mov [lexer_tok_line], rax
+	mov qword [lexer_tok_kind], TOK_SHR
+	mov rax, TOK_SHR
+	ret
 
 lexer_read_str:
 	; token slice excludes surrounding quotes, but includes escape sequences
@@ -259,6 +588,42 @@ lexer_make_minus:
 	mov rax, TOK_MINUS
 	ret
 
+lexer_make_star:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_STAR
+	mov rax, TOK_STAR
+	ret
+
+lexer_make_and:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_AND
+	mov rax, TOK_AND
+	ret
+
+lexer_make_or:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_OR
+	mov rax, TOK_OR
+	ret
+
+lexer_make_xor:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_XOR
+	mov rax, TOK_XOR
+	ret
+
+lexer_make_lt:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_LT
+	mov rax, TOK_LT
+	ret
+
+lexer_make_gt:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_GT
+	mov rax, TOK_GT
+	ret
+
 ; helper: create a 1-char token from current idx
 lexer_make_punct:
 	mov rcx, [lexer_idx]
@@ -351,6 +716,18 @@ lexer_read_ident:
 	ret
 
 .ident:
+	; keyword: if
+	cmp rdx, 2
+	jne .ident_ptr8
+	cmp byte [rax + 0], 'i'
+	jne .ident_ptr8
+	cmp byte [rax + 1], 'f'
+	jne .ident_ptr8
+	mov qword [lexer_tok_kind], TOK_KW_IF
+	mov rax, TOK_KW_IF
+	ret
+
+.ident_ptr8:
 	; keywords: ptr8
 	cmp rdx, 4
 	jne .maybe_ptr64
@@ -400,7 +777,7 @@ lexer_read_ident:
 ; returns rax=1 if current token slice is a valid reg name else 0
 lexer_classify_reg:
 	; input: lexer_tok_ptr/len already set
-	mov rbx, [lexer_tok_ptr]
+	mov r8, [lexer_tok_ptr]
 	mov rcx, [lexer_tok_len]
 	cmp rcx, 2
 	je .len2
@@ -410,9 +787,9 @@ lexer_classify_reg:
 	ret
 .len2:
 	; r8, r9
-	cmp byte [rbx + 0], 'r'
+	cmp byte [r8 + 0], 'r'
 	jne .no
-	mov al, [rbx + 1]
+	mov al, [r8 + 1]
 	cmp al, '8'
 	je .yes
 	cmp al, '9'
@@ -420,23 +797,23 @@ lexer_classify_reg:
 	xor rax, rax
 	ret
 .len3:
-	cmp byte [rbx + 0], 'r'
+	cmp byte [r8 + 0], 'r'
 	jne .no
 	; rax rbx rcx rdx rsi rdi rsp rbp
-	cmp byte [rbx + 1], 'a'
+	cmp byte [r8 + 1], 'a'
 	je .chk_x
-	cmp byte [rbx + 1], 'b'
+	cmp byte [r8 + 1], 'b'
 	je .chk_b
-	cmp byte [rbx + 1], 'c'
+	cmp byte [r8 + 1], 'c'
 	je .chk_x
-	cmp byte [rbx + 1], 'd'
+	cmp byte [r8 + 1], 'd'
 	je .chk_x_or_i
-	cmp byte [rbx + 1], 's'
+	cmp byte [r8 + 1], 's'
 	je .chk_s
 	; r10..r15
-	cmp byte [rbx + 1], '1'
+	cmp byte [r8 + 1], '1'
 	jne .no
-	mov al, [rbx + 2]
+	mov al, [r8 + 2]
 	cmp al, '0'
 	jb .no
 	cmp al, '5'
@@ -444,28 +821,28 @@ lexer_classify_reg:
 	jmp .yes
 
 .chk_x:
-	cmp byte [rbx + 2], 'x'
+	cmp byte [r8 + 2], 'x'
 	je .yes
 	jmp .no
 
 .chk_b:
-	cmp byte [rbx + 2], 'x'
+	cmp byte [r8 + 2], 'x'
 	je .yes
-	cmp byte [rbx + 2], 'p'
+	cmp byte [r8 + 2], 'p'
 	je .yes
 	jmp .no
 
 .chk_x_or_i:
-	cmp byte [rbx + 2], 'x'
+	cmp byte [r8 + 2], 'x'
 	je .yes
-	cmp byte [rbx + 2], 'i'
+	cmp byte [r8 + 2], 'i'
 	je .yes
 	jmp .no
 
 .chk_s:
-	cmp byte [rbx + 2], 'i'
+	cmp byte [r8 + 2], 'i'
 	je .yes
-	cmp byte [rbx + 2], 'p'
+	cmp byte [r8 + 2], 'p'
 	je .yes
 	jmp .no
 .yes:
@@ -551,7 +928,7 @@ lexer_skip_ws_and_comments:
 	mov rdi, [lexer_buf_ptr]
 	mov rsi, [lexer_buf_len]
 	mov rcx, [lexer_idx]
-	mov rbx, [lexer_bol]
+	mov r11, [lexer_bol]
 
 .ws_loop:
 	cmp rcx, rsi
@@ -586,7 +963,7 @@ lexer_skip_ws_and_comments:
 	mov rax, [lexer_line]
 	inc rax
 	mov [lexer_line], rax
-	mov rbx, 1
+	mov r11, 1
 	jmp .ws_loop
 
 .adv:
@@ -606,12 +983,12 @@ lexer_skip_ws_and_comments:
 	mov rax, [lexer_line]
 	inc rax
 	mov [lexer_line], rax
-	mov rbx, 1
+	mov r11, 1
 	jmp .ws_loop
 
 .done:
 	mov [lexer_idx], rcx
-	mov [lexer_bol], rbx
+	mov [lexer_bol], r11
 	ret
 
 lexer_err_bad_char:

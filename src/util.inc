@@ -190,6 +190,105 @@ util_u64_to_dec:
 	pop rbp
 	ret
 
+; rdi = ptr, rsi = len
+; returns rax = parsed unsigned integer
+; supports decimal and 0x/0X-prefixed hex
+; NOTE: assumes input is a valid TOK_INT slice (lexer guarantees format).
+util_parse_u64:
+	push rbp
+	mov rbp, rsp
+	push r12
+	push r13
+	push r14
+	push r15
+
+	mov r12, rdi          ; ptr
+	mov r13, rsi          ; len
+	xor eax, eax          ; acc
+
+	; default base = 10
+	mov r14d, 10
+
+	; detect 0x / 0X
+	cmp r13, 2
+	jb .loop
+	cmp byte [r12 + 0], '0'
+	jne .loop
+	mov dl, [r12 + 1]
+	cmp dl, 'x'
+	je .hex
+	cmp dl, 'X'
+	jne .loop
+.hex:
+	mov r14d, 16
+	add r12, 2
+	sub r13, 2
+
+.loop:
+	test r13, r13
+	jz .done
+	mov dl, [r12]
+
+	cmp r14d, 10
+	je .digit_dec
+
+	; hex digit
+	cmp dl, '0'
+	jb .done
+	cmp dl, '9'
+	jbe .hex_num
+	cmp dl, 'A'
+	jb .hex_chk2
+	cmp dl, 'F'
+	jbe .hex_upper
+.hex_chk2:
+	cmp dl, 'a'
+	jb .done
+	cmp dl, 'f'
+	ja .done
+	; lower a-f
+	sub dl, 'a'
+	add dl, 10
+	jmp .hex_acc
+.hex_upper:
+	sub dl, 'A'
+	add dl, 10
+	jmp .hex_acc
+.hex_num:
+	sub dl, '0'
+.hex_acc:
+	; acc = acc*16 + dl
+	shl rax, 4
+	movzx r15, dl
+	add rax, r15
+	jmp .adv
+
+.digit_dec:
+	; decimal digit
+	cmp dl, '0'
+	jb .done
+	cmp dl, '9'
+	ja .done
+	sub dl, '0'
+	; acc = acc*10 + dl
+	lea rax, [rax*4 + rax]   ; *5
+	lea rax, [rax*2]         ; *10
+	movzx r15, dl
+	add rax, r15
+
+.adv:
+	inc r12
+	dec r13
+	jmp .loop
+
+.done:
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+	pop rbp
+	ret
+
 ; rdi = path
 ; returns rax = fd or fatal
 util_open_readonly:
