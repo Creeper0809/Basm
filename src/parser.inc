@@ -43,6 +43,9 @@ parser_parse_func:
 
 	; reset locals per function
 	mov qword [parser_local_count], 0
+	mov qword [parser_local_bytes], 0
+	; reset per-function if label counter
+	mov qword [parser_if_count], 0
 
 	; func
 	mov rdi, TOK_KW_FUNC
@@ -99,11 +102,13 @@ parser_parse_func:
 	jmp .var_loop
 
 .after_vars:
-	; alignment padding if odd (do not register symbol)
-	mov rax, [parser_local_count]
-	test rax, 1
+	; alignment padding (do not register symbol)
+	; Keep Stage1 rule: total local allocation is 16-byte aligned.
+	mov rax, [parser_local_bytes]
+	test rax, 8
 	jz .no_pad
 	call emit_align_pad
+	add qword [parser_local_bytes], 8
 .no_pad:
 
 	; parse statements until end of function
@@ -128,25 +133,63 @@ parser_parse_func:
 	ret
 
 parser_parse_global_var_decl:
-	; top-level: "var" ident ";"  -> emit: <ident>: dq 0
+	; top-level:
+	;   var name;     -> emit: <name>: dq 0
+	;   var name[N];  -> emit: <name>: resb <N>
 	mov rdi, TOK_KW_VAR
 	call lexer_expect
 	call lexer_peek
 	cmp rax, TOK_IDENT
 	jne parser_err_expected_ident
+	push r12
 	push r14
 	push r15
 	mov r14, [lexer_tok_ptr]
 	mov r15, [lexer_tok_len]
 	call lexer_next
+	call lexer_peek
+	cmp rax, TOK_LBRACK
+	jne .scalar
+
+	; array size: [ INT ]
+	mov rdi, TOK_LBRACK
+	call lexer_expect
+	call lexer_peek
+	cmp rax, TOK_INT
+	jne parser_err_expected_int
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call util_parse_u64
+	mov r12, rax
+	call lexer_next
+	mov rdi, TOK_RBRACK
+	call lexer_expect
+	mov rdi, TOK_SEMI
+	call lexer_expect
+
+	; emit into .bss
+	mov rdi, r12
+	lea rsi, [rel parser_num_buf + 63]
+	call util_u64_to_dec          ; rax=num_ptr, rdx=num_len
+	mov rcx, rdx
+	mov rdx, rax
+	mov rdi, r14
+	mov rsi, r15
+	call emit_global_resb
+	jmp .done
+
+.scalar:
 	mov rdi, TOK_SEMI
 	call lexer_expect
 	; emit into .data
 	mov rdi, r14
 	mov rsi, r15
 	call emit_global_dq0
+
+.done:
 	pop r15
 	pop r14
+	pop r12
 	ret
 
 parser_parse_stmt:
@@ -157,6 +200,7 @@ parser_parse_stmt:
 	;   <reg> = ptr64[addr] ;
 	;   ptr8[addr] = <reg|int> ;
 	;   ptr64[addr] = <reg|int> ;
+	push rbx
 	push r12
 	push r13
 	push r14
@@ -167,6 +211,8 @@ parser_parse_stmt:
 	je .stmt_reg
 	cmp rax, TOK_IDENT
 	je .stmt_call
+	cmp rax, TOK_KW_IF
+	je .stmt_if
 	cmp rax, TOK_KW_PTR8
 	je .stmt_store8
 	cmp rax, TOK_KW_PTR64
@@ -178,20 +224,376 @@ parser_parse_stmt:
 	mov r14, [lexer_tok_ptr]
 	mov r15, [lexer_tok_len]
 	call lexer_next
-	; '='
-	mov rdi, TOK_EQ
-	call lexer_expect
+
+	; operator: '=' or compound-assignment
+	call lexer_peek
+	cmp rax, TOK_EQ
+	je .op_eq
+	cmp rax, TOK_PLUSEQ
+	je .op_pluseq
+	cmp rax, TOK_MINUSEQ
+	je .op_minuseq
+	cmp rax, TOK_STAREQ
+	je .op_stareq
+	cmp rax, TOK_ANDEQ
+	je .op_andeq
+	cmp rax, TOK_OREQ
+	je .op_oreq
+	cmp rax, TOK_XOREQ
+	je .op_xoreq
+	cmp rax, TOK_SHLEQ
+	je .op_shleq
+	cmp rax, TOK_SHREQ
+	je .op_shreq
+	jmp parser_err_expected_stmt
+
+.op_eq:
+	call lexer_next
 
 	call lexer_peek
 	cmp rax, TOK_INT
-	je .rv_int
+	je .eq_first
 	cmp rax, TOK_REG
-	je .rv_reg
+	je .eq_first
 	cmp rax, TOK_KW_PTR8
 	je .rv_ptr8
 	cmp rax, TOK_KW_PTR64
 	je .rv_ptr64
 	jmp parser_err_expected_stmt
+
+.eq_first:
+	; read first token slice (int/reg). Could be a plain assignment, or a compare expr.
+	mov r12, [lexer_tok_ptr]
+	mov r13, [lexer_tok_len]
+	mov r11, rax                ; kind of first token
+	call lexer_next
+
+	; comparisons are not allowed in assignments (Stage1 rule)
+	call lexer_peek
+	cmp rax, TOK_EQEQ
+	je parser_err_cmp_only_in_if
+	cmp rax, TOK_NE
+	je parser_err_cmp_only_in_if
+	cmp rax, TOK_LT
+	je parser_err_cmp_only_in_if
+	cmp rax, TOK_LE
+	je parser_err_cmp_only_in_if
+	cmp rax, TOK_GT
+	je parser_err_cmp_only_in_if
+	cmp rax, TOK_GE
+	je parser_err_cmp_only_in_if
+
+	; plain assignment: dst = first;
+	mov rdi, TOK_SEMI
+	call lexer_expect
+	mov rdi, r14
+	mov rsi, r15
+	mov rdx, r12
+	mov rcx, r13
+	cmp r11, TOK_INT
+	je .emit_mov_imm
+	; reg
+	call emit_mov_reg_reg
+	jmp .done
+.emit_mov_imm:
+	call emit_mov_reg_imm
+	jmp .done
+
+
+.op_pluseq:
+	call lexer_next
+	mov rbx, TOK_PLUSEQ
+	jmp .op_bin_kind
+.op_minuseq:
+	call lexer_next
+	mov rbx, TOK_MINUSEQ
+	jmp .op_bin_kind
+.op_stareq:
+	call lexer_next
+	mov rbx, TOK_STAREQ
+	jmp .op_bin_kind
+.op_andeq:
+	call lexer_next
+	mov rbx, TOK_ANDEQ
+	jmp .op_bin_kind
+.op_oreq:
+	call lexer_next
+	mov rbx, TOK_OREQ
+	jmp .op_bin_kind
+.op_xoreq:
+	call lexer_next
+	mov rbx, TOK_XOREQ
+	jmp .op_bin_kind
+.op_shleq:
+	call lexer_next
+	mov rbx, TOK_SHLEQ
+	jmp .op_shift
+.op_shreq:
+	call lexer_next
+	mov rbx, TOK_SHREQ
+	jmp .op_shift
+.op_bin_kind:
+	; dst <op>= (int|reg);
+	call lexer_peek
+	cmp rax, TOK_INT
+	je .bin_rhs
+	cmp rax, TOK_REG
+	je .bin_rhs
+	jmp parser_err_expected_stmt
+.bin_rhs:
+	mov r12, [lexer_tok_ptr]
+	mov r13, [lexer_tok_len]
+	push rax                    ; save rhs kind across lexer calls
+	call lexer_next
+	mov rdi, TOK_SEMI
+	call lexer_expect
+	pop r11
+
+	; emit op
+	mov rdi, r14
+	mov rsi, r15
+	mov rdx, r12
+	mov rcx, r13
+	cmp rbx, TOK_PLUSEQ
+	je .emit_add
+	cmp rbx, TOK_MINUSEQ
+	je .emit_sub
+	cmp rbx, TOK_STAREQ
+	je .emit_imul
+	cmp rbx, TOK_ANDEQ
+	je .emit_and
+	cmp rbx, TOK_OREQ
+	je .emit_or
+	cmp rbx, TOK_XOREQ
+	je .emit_xor
+	jmp parser_err_expected_stmt
+.emit_add:
+	cmp r11, TOK_INT
+	je .add_imm
+	call emit_add_reg_reg
+	jmp .done
+.add_imm:
+	call emit_add_reg_imm
+	jmp .done
+.emit_sub:
+	cmp r11, TOK_INT
+	je .sub_imm
+	call emit_sub_reg_reg
+	jmp .done
+.sub_imm:
+	call emit_sub_reg_imm
+	jmp .done
+.emit_imul:
+	cmp r11, TOK_INT
+	je .imul_imm
+	call emit_imul_reg_reg
+	jmp .done
+.imul_imm:
+	call emit_imul_reg_imm
+	jmp .done
+.emit_and:
+	cmp r11, TOK_INT
+	je .and_imm
+	call emit_and_reg_reg
+	jmp .done
+.and_imm:
+	call emit_and_reg_imm
+	jmp .done
+.emit_or:
+	cmp r11, TOK_INT
+	je .or_imm
+	call emit_or_reg_reg
+	jmp .done
+.or_imm:
+	call emit_or_reg_imm
+	jmp .done
+.emit_xor:
+	cmp r11, TOK_INT
+	je .xor_imm
+	call emit_xor_reg_reg
+	jmp .done
+.xor_imm:
+	call emit_xor_reg_imm
+	jmp .done
+
+.op_shift:
+	; shifts: only allow imm for now
+	call lexer_peek
+	cmp rax, TOK_INT
+	jne parser_err_expected_stmt
+	mov r12, [lexer_tok_ptr]
+	mov r13, [lexer_tok_len]
+	call lexer_next
+	mov rdi, TOK_SEMI
+	call lexer_expect
+	mov rdi, r14
+	mov rsi, r15
+	mov rdx, r12
+	mov rcx, r13
+	cmp rbx, TOK_SHLEQ
+	je .do_shl
+	call emit_shr_reg_imm
+	jmp .done
+
+.stmt_if:
+	; if ( <reg> <cmp> <int|reg> ) { <stmts> }
+	call lexer_next
+	mov rdi, TOK_LPAREN
+	call lexer_expect
+	call lexer_peek
+	cmp rax, TOK_REG
+	jne parser_err_if_lhs_must_be_reg
+	mov r12, [lexer_tok_ptr]          ; lhs reg slice
+	mov r13, [lexer_tok_len]
+	call lexer_next
+	call lexer_peek
+	mov rbx, rax                      ; cmp token
+	cmp rax, TOK_EQEQ
+	je .if_cmp_ok
+	cmp rax, TOK_NE
+	je .if_cmp_ok
+	cmp rax, TOK_LT
+	je .if_cmp_ok
+	cmp rax, TOK_LE
+	je .if_cmp_ok
+	cmp rax, TOK_GT
+	je .if_cmp_ok
+	cmp rax, TOK_GE
+	je .if_cmp_ok
+	jmp parser_err_expected_if_cmp
+.if_cmp_ok:
+	push rbx                          ; save cmp token kind across calls
+	call lexer_next
+	call lexer_peek
+	cmp rax, TOK_INT
+	je .if_rhs_ok
+	cmp rax, TOK_REG
+	je .if_rhs_ok
+	jmp parser_err_expected_if_rhs
+.if_rhs_ok:
+	mov r8, [lexer_tok_ptr]
+	mov r9, [lexer_tok_len]
+	push rax                          ; rhs kind
+	call lexer_next
+	mov rdi, TOK_RPAREN
+	call lexer_expect
+
+	; build end label: .Lif_end_<n> (local label, per-function)
+	mov rax, [parser_if_count]
+	inc rax
+	mov [parser_if_count], rax
+	mov r14, rax                     ; save if-id for later (nested if-safe)
+	mov rdi, r14
+	lea rsi, [rel parser_num_buf + 63]
+	call util_u64_to_dec              ; rax=num_ptr, rdx=num_len
+	mov r11, rdx                      ; save num_len
+	lea rdi, [rel parser_if_label_buf]
+	lea rsi, [rel parser_if_end_prefix]
+	mov rcx, parser_if_end_prefix_len
+	call parser_copy_bytes
+	lea rdi, [rel parser_if_label_buf]
+	add rdi, parser_if_end_prefix_len
+	mov rsi, rax
+	mov rcx, r11
+	call parser_copy_bytes
+	mov r10, parser_if_end_prefix_len
+	add r10, r11                      ; r10 = label_len
+
+	; cmp lhs, rhs
+	pop r11                           ; rhs kind
+	mov rdi, r12
+	mov rsi, r13
+	mov rdx, r8
+	mov rcx, r9
+	cmp r11, TOK_INT
+	je .if_cmp_imm
+	call emit_cmp_reg_reg
+	jmp .if_after_cmp
+.if_cmp_imm:
+	call emit_cmp_reg_imm
+.if_after_cmp:
+	pop rbx                           ; cmp token kind
+
+	; choose inverted jump condition (jump to end if condition is false)
+	cmp rbx, TOK_EQEQ
+	je .if_cc_ne
+	cmp rbx, TOK_NE
+	je .if_cc_e
+	cmp rbx, TOK_LT
+	je .if_cc_ge
+	cmp rbx, TOK_LE
+	je .if_cc_g
+	cmp rbx, TOK_GT
+	je .if_cc_le
+	; GE
+	jmp .if_cc_l
+.if_cc_ne:
+	lea rdi, [rel parser_cc_ne]
+	mov rsi, parser_cc_ne_len
+	jmp .if_emit_jcc
+.if_cc_e:
+	lea rdi, [rel parser_cc_e]
+	mov rsi, parser_cc_e_len
+	jmp .if_emit_jcc
+.if_cc_ge:
+	lea rdi, [rel parser_cc_ge]
+	mov rsi, parser_cc_ge_len
+	jmp .if_emit_jcc
+.if_cc_g:
+	lea rdi, [rel parser_cc_g]
+	mov rsi, parser_cc_g_len
+	jmp .if_emit_jcc
+.if_cc_le:
+	lea rdi, [rel parser_cc_le]
+	mov rsi, parser_cc_le_len
+	jmp .if_emit_jcc
+.if_cc_l:
+	lea rdi, [rel parser_cc_l]
+	mov rsi, parser_cc_l_len
+.if_emit_jcc:
+	lea rdx, [rel parser_if_label_buf]
+	mov rcx, r10
+	call emit_jcc
+
+	push r14                          ; save if-id for emit_label after body (nested if-safe)
+
+	; parse body
+	mov rdi, TOK_LBRACE
+	call lexer_expect
+.if_body_loop:
+	call lexer_peek
+	cmp rax, TOK_RBRACE
+	je .if_body_done
+	call parser_parse_stmt
+	jmp .if_body_loop
+.if_body_done:
+	mov rdi, TOK_RBRACE
+	call lexer_expect
+
+	; emit end label
+	pop r14
+	; rebuild end label into parser_if_label_buf (nested if-safe)
+	mov rdi, r14
+	lea rsi, [rel parser_num_buf + 63]
+	call util_u64_to_dec              ; rax=num_ptr, rdx=num_len
+	mov r11, rdx                      ; num_len
+	lea rdi, [rel parser_if_label_buf]
+	lea rsi, [rel parser_if_end_prefix]
+	mov rcx, parser_if_end_prefix_len
+	call parser_copy_bytes
+	lea rdi, [rel parser_if_label_buf]
+	add rdi, parser_if_end_prefix_len
+	mov rsi, rax
+	mov rcx, r11
+	call parser_copy_bytes
+	lea rdi, [rel parser_if_label_buf]
+	mov rsi, parser_if_end_prefix_len
+	add rsi, r11                      ; label_len
+	call emit_label
+	jmp .done
+.do_shl:
+	call emit_shl_reg_imm
+	jmp .done
 
 .rv_int:
 	mov r12, [lexer_tok_ptr]
@@ -209,7 +611,6 @@ parser_parse_stmt:
 .stmt_call:
 	; func call: ident '(' [args] ')' ';'
 	; save callee name slice
-	push rbx
 	push r10
 	push r11
 	push r8
@@ -354,7 +755,6 @@ parser_parse_stmt:
 	pop r8
 	pop r11
 	pop r10
-	pop rbx
 	jmp .done
 
 .rv_reg:
@@ -467,13 +867,26 @@ parser_parse_stmt:
 	call lexer_expect
 	call lexer_peek
 	cmp rax, TOK_INT
-	je .s64_val
+	je .s64_int
 	cmp rax, TOK_REG
-	je .s64_val
+	je .s64_reg
 	jmp parser_err_expected_stmt
-.s64_val:
+.s64_int:
+	; x86-64 has no encoding for `mov qword [mem], imm64`.
+	; NASM will encode imm32 with sign-extension (and warn/truncate).
+	; Require the user to load large immediates into a register first.
 	mov r12, [lexer_tok_ptr]
 	mov r13, [lexer_tok_len]
+	mov rdi, r12
+	mov rsi, r13
+	call util_parse_u64
+	cmp rax, 0x7fffffff
+	ja parser_err_store64_imm_too_big
+	jmp .s64_after_val
+.s64_reg:
+	mov r12, [lexer_tok_ptr]
+	mov r13, [lexer_tok_len]
+.s64_after_val:
 	call lexer_next
 	mov rdi, TOK_SEMI
 	call lexer_expect
@@ -489,12 +902,16 @@ parser_parse_stmt:
 	pop r14
 	pop r13
 	pop r12
+	pop rbx
 	ret
 
 parser_parse_var_decl:
-	; "var" ident ";"
+	; function-scope:
+	;   var name;     -> 8-byte slot (push 0)
+	;   var name[N];  -> raw stack bytes (sub rsp, round_up(N,8))
 	mov rdi, TOK_KW_VAR
 	call lexer_expect
+	push r12
 
 	call lexer_peek
 	cmp rax, TOK_IDENT
@@ -505,13 +922,40 @@ parser_parse_var_decl:
 	mov r14, [lexer_tok_ptr]
 	mov r15, [lexer_tok_len]
 	call lexer_next
+
+	; optional array size: [ INT ]
+	call lexer_peek
+	cmp rax, TOK_LBRACK
+	jne .scalar
+	; [
+	mov rdi, TOK_LBRACK
+	call lexer_expect
+	call lexer_peek
+	cmp rax, TOK_INT
+	jne parser_err_expected_int
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call util_parse_u64
+	mov r12, rax               ; N
+	call lexer_next
+	mov rdi, TOK_RBRACK
+	call lexer_expect
+	mov rdi, TOK_SEMI
+	call lexer_expect
+
+	; alloc_bytes = round_up(N, 8)
+	mov rax, r12
+	add rax, 7
+	and rax, -8
+	mov r12, rax
+
 	; local_count++
 	mov rax, [parser_local_count]
 	inc rax
 	mov [parser_local_count], rax
-	; offset = local_count * 8
-	mov rcx, rax
-	shl rcx, 3
+	; offset = parser_local_bytes + alloc_bytes
+	mov rcx, [parser_local_bytes]
+	add rcx, r12
 	; store entry at index (local_count-1)
 	dec rax
 	lea rbx, [rel parser_local_ptrs]
@@ -520,14 +964,45 @@ parser_parse_var_decl:
 	mov [rbx + rax*8], r15
 	lea rbx, [rel parser_local_offs]
 	mov [rbx + rax*8], rcx
+
+	; allocate raw bytes (no init)
+	mov rdi, r12
+	lea rsi, [rel parser_num_buf + 63]
+	call util_u64_to_dec          ; rax=num_ptr, rdx=num_len
+	mov rdi, rax
+	mov rsi, rdx
+	call emit_sub_rsp_imm
+	add [parser_local_bytes], r12
 	pop r15
 	pop r14
+	pop r12
+	ret
 
+.scalar:
+	; scalar: ';'
 	mov rdi, TOK_SEMI
 	call lexer_expect
-
+	; local_count++
+	mov rax, [parser_local_count]
+	inc rax
+	mov [parser_local_count], rax
+	; offset = parser_local_bytes + 8
+	mov rcx, [parser_local_bytes]
+	add rcx, 8
+	; store entry at index (local_count-1)
+	dec rax
+	lea rbx, [rel parser_local_ptrs]
+	mov [rbx + rax*8], r14
+	lea rbx, [rel parser_local_lens]
+	mov [rbx + rax*8], r15
+	lea rbx, [rel parser_local_offs]
+	mov [rbx + rax*8], rcx
 	; allocate slot (push 0)
 	call emit_push0
+	add qword [parser_local_bytes], 8
+	pop r15
+	pop r14
+	pop r12
 	ret
 
 parser_parse_args:
@@ -616,8 +1091,9 @@ parser_find_local_offset:
 
 ; copies rcx bytes from rsi to rdi, returns rdi advanced
 parser_copy_bytes:
+	push rax
 	test rcx, rcx
-	jz .ret
+	jz .done
 .l:
 	mov al, [rsi]
 	mov [rdi], al
@@ -625,7 +1101,9 @@ parser_copy_bytes:
 	inc rdi
 	dec rcx
 	jnz .l
-.ret:
+
+.done:
+	pop rax
 	ret
 
 ; rdi=raw_ptr, rsi=raw_len (may contain escapes)
@@ -796,6 +1274,7 @@ parser_intern_string:
 parser_parse_mem_operand_after_lbrack:
 	push rbp
 	mov rbp, rsp
+	push rbx
 	push r12
 	push r13
 	push r14
@@ -813,12 +1292,40 @@ parser_parse_mem_operand_after_lbrack:
 	mov r15, [lexer_tok_len]
 	call lexer_next
 
-	; no +/- allowed for ident base
+	; optional index: ident + reg
+	xor r12d, r12d                  ; has_index
 	call lexer_peek
 	cmp rax, TOK_PLUS
-	je parser_err_expected_addr
+	jne .after_ident_index
+	call lexer_next
+	call lexer_peek
+	cmp rax, TOK_REG
+	jne parser_err_expected_addr
+	mov r13, [lexer_tok_ptr]         ; index_ptr
+	mov r11, [lexer_tok_len]         ; index_len
+	push r13
+	push r11
+	call lexer_next
+	mov r12d, 1
+.after_ident_index:
+	; '-' is still not allowed for ident base
+	call lexer_peek
 	cmp rax, TOK_MINUS
+	jne .after_ident_checks
+	cmp r12d, 0
 	je parser_err_expected_addr
+	add rsp, 16
+	jmp parser_err_expected_addr
+.after_ident_checks:
+	; disallow a second '+' (only ident or ident+reg)
+	call lexer_peek
+	cmp rax, TOK_PLUS
+	jne .after_ident_checks2
+	cmp r12d, 0
+	je parser_err_expected_addr
+	add rsp, 16
+	jmp parser_err_expected_addr
+.after_ident_checks2:
 
 	mov rdi, r14
 	mov rsi, r15
@@ -827,31 +1334,35 @@ parser_parse_mem_operand_after_lbrack:
 	jz .global_ident
 
 	; local: [rbp-<dec>]
-	mov r12, rax
+	mov rbx, rax
 	lea rdi, [rel parser_mem_buf]
 	lea rsi, [rel parser_mem_local_prefix]
 	mov rcx, parser_mem_local_prefix_len
 	call parser_copy_bytes
 
-	mov rdi, r12
+	push rdi
+	mov rdi, rbx
 	lea rsi, [rel parser_num_buf + 63]
 	call util_u64_to_dec          ; rax=num_ptr, rdx=num_len
+	pop rdi
 	mov rsi, rax
-	lea rdi, [rel parser_mem_buf]
-	add rdi, parser_mem_local_prefix_len
 	mov rcx, rdx
 	call parser_copy_bytes
 
-	lea rdi, [rel parser_mem_buf]
-	add rdi, parser_mem_local_prefix_len
-	add rdi, rdx
+	cmp r12d, 0
+	je .local_close
+	mov byte [rdi], '+'
+	inc rdi
+	pop rcx                        ; index_len
+	pop rsi                        ; index_ptr
+	call parser_copy_bytes
+.local_close:
 	mov byte [rdi], ']'
+	inc rdi
 
-	mov rax, parser_mem_local_prefix_len
-	add rax, rdx
-	inc rax
-	mov rdx, rax
 	lea rax, [rel parser_mem_buf]
+	mov rdx, rdi
+	sub rdx, rax
 	jmp .done
 
 .global_ident:
@@ -861,22 +1372,24 @@ parser_parse_mem_operand_after_lbrack:
 	mov rcx, parser_mem_global_prefix_len
 	call parser_copy_bytes
 
-	lea rdi, [rel parser_mem_buf]
-	add rdi, parser_mem_global_prefix_len
 	mov rsi, r14
 	mov rcx, r15
 	call parser_copy_bytes
 
-	lea rdi, [rel parser_mem_buf]
-	add rdi, parser_mem_global_prefix_len
-	add rdi, r15
+	cmp r12d, 0
+	je .global_close
+	mov byte [rdi], '+'
+	inc rdi
+	pop rcx                        ; index_len
+	pop rsi                        ; index_ptr
+	call parser_copy_bytes
+.global_close:
 	mov byte [rdi], ']'
+	inc rdi
 
-	mov rax, parser_mem_global_prefix_len
-	add rax, r15
-	inc rax
-	mov rdx, rax
 	lea rax, [rel parser_mem_buf]
+	mov rdx, rdi
+	sub rdx, rax
 	jmp .done
 
 .base_reg:
@@ -903,7 +1416,7 @@ parser_parse_mem_operand_after_lbrack:
 	cmp rax, TOK_INT
 	jne parser_err_expected_addr
 	mov r13, [lexer_tok_ptr]
-	mov r11, [lexer_tok_len]
+	mov rbx, [lexer_tok_len]
 	call lexer_next
 
 .build_reg:
@@ -925,7 +1438,7 @@ parser_parse_mem_operand_after_lbrack:
 .after_sign:
 	inc rdi
 	mov rsi, r13
-	mov rcx, r11
+	mov rcx, rbx
 	call parser_copy_bytes
 
 .finish_reg:
@@ -940,6 +1453,7 @@ parser_parse_mem_operand_after_lbrack:
 	pop r14
 	pop r13
 	pop r12
+	pop rbx
 	pop rbp
 	ret
 
@@ -1128,6 +1642,36 @@ parser_err_expected_addr:
 	mov rsi, [lexer_tok_line]
 	call util_fatal_line
 
+parser_err_expected_int:
+	lea rdi, [rel parser_msg_expected_int]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
+parser_err_cmp_only_in_if:
+	lea rdi, [rel parser_msg_cmp_only_in_if]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
+parser_err_if_lhs_must_be_reg:
+	lea rdi, [rel parser_msg_if_lhs_must_be_reg]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
+parser_err_expected_if_cmp:
+	lea rdi, [rel parser_msg_expected_if_cmp]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
+parser_err_expected_if_rhs:
+	lea rdi, [rel parser_msg_expected_if_rhs]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
+parser_err_store64_imm_too_big:
+	lea rdi, [rel parser_msg_store64_imm_too_big]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
 section .rodata
 parser_msg_expected_main: db "parse error: expected function name 'main'",10,0
 parser_msg_expected_ident: db "parse error: expected identifier",10,0
@@ -1135,7 +1679,33 @@ parser_msg_expected_eof: db "parse error: expected end of file",10,0
 parser_msg_too_many_args: db "parse error: too many args (max 6)",10,0
 parser_msg_expected_stmt: db "parse error: expected statement",10,0
 
+parser_msg_expected_int: db "parse error: expected integer",10,0
+
+parser_msg_cmp_only_in_if: db "parse error: comparisons are only allowed inside if",10,0
+parser_msg_if_lhs_must_be_reg: db "parse error: if lhs must be a register",10,0
+parser_msg_expected_if_cmp: db "parse error: expected comparison operator in if",10,0
+parser_msg_expected_if_rhs: db "parse error: expected int or reg on rhs of if",10,0
+
+parser_msg_store64_imm_too_big: db "parse error: ptr64 store immediate must fit in signed 32-bit; load into a register first",10,0
+
+parser_if_end_prefix: db "Lif_end_"
+parser_if_end_prefix_len: equ $-parser_if_end_prefix
+
 parser_msg_expected_addr: db "parse error: expected address inside ptr[]",10,0
+
+; setcc condition codes (for boolean compares)
+parser_cc_e:  db "e"
+parser_cc_e_len:  equ $-parser_cc_e
+parser_cc_ne: db "ne"
+parser_cc_ne_len: equ $-parser_cc_ne
+parser_cc_l:  db "l"
+parser_cc_l_len:  equ $-parser_cc_l
+parser_cc_le: db "le"
+parser_cc_le_len: equ $-parser_cc_le
+parser_cc_g:  db "g"
+parser_cc_g_len:  equ $-parser_cc_g
+parser_cc_ge: db "ge"
+parser_cc_ge_len: equ $-parser_cc_ge
 
 parser_mem_local_prefix: db "[rbp-"
 parser_mem_local_prefix_len: equ $-parser_mem_local_prefix
@@ -1199,11 +1769,14 @@ parser_call_dst_ptr: resq 1
 parser_call_dst_len: resq 1
 parser_seen_main:    resq 1
 parser_local_count: resq 1
+parser_local_bytes: resq 1
 parser_local_ptrs:  resq 256
 parser_local_lens:  resq 256
 parser_local_offs:  resq 256
 parser_mem_buf:     resb 128
 parser_num_buf:     resb 64
+parser_if_count:    resq 1
+parser_if_label_buf: resb 64
 parser_str_count:   resq 1
 parser_str_label_buf:     resb 64
 parser_str_end_label_buf: resb 80
