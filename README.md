@@ -24,7 +24,7 @@ Basm의 철학은 단순합니다.
 
 - High-Level Assembly: 어셈블리어의 제어권 + C언어의 가독성.
 
-- Explicit Registers: eax, r8등을 직접 제어한다.
+- Explicit Registers: rax, r8 등을 직접 제어한다.
 
 ## Syntax Preview
 
@@ -43,19 +43,36 @@ __asm__ volatile (
 Basm (EZ & Clean):
 ```C
 
-// Just do it.
-eax = 10;
-eax += 1;
+// Just do it. (Stage1 현재 구현 기준)
+// - 레지스터는 64-bit 이름(rax..r15)만 레지스터로 인식합니다.
+// - 비교 연산자는 if 조건에서만 허용됩니다.
 
-if (eax > 5) {
-    // System Call Example (Linux x64 write)
-    rax = 1;        // sys_write
-    rdi = 1;        // stdout
-    rsi = msg_ptr;  // buffer
-    rdx = 12;       // length
-    syscall;
+rax = 10;
+rax += 1;
+
+// 메모리 접근은 ptr8/ptr64를 통해서만 합니다.
+// (예: ptr64[var] = rax;  rdi = ptr64[var];)
+
+if (rax > 5) {
+        // 함수 호출은 ident(args...);
+        // (내장 런타임 예: print_str, print_dec)
+        print_str("ok\n");
 }
 ```
+
+## 문법 문서
+
+현재 Stage1에서 실제로 지원되는 문법/제약은 아래 문서에 정리되어 있습니다.
+
+- [page/syntax.md](page/syntax.md)
+
+### 자주 헷갈리는 포인트(요약)
+
+- `eax` 같은 32-bit 레지스터 이름은 현재 레지스터로 인식되지 않습니다(예: `rax` 사용).
+- 비교(`== != < <= > >=`)는 **if 조건에서만** 사용 가능합니다.
+- `ptr64[mem] = imm64`는 CPU 인코딩 제약 때문에 직접 지원하지 않습니다.
+    - 큰 64비트 상수는 `r11 = 0x...; ptr64[mem] = r11;`처럼 레지스터 경유로 저장하세요.
+    - 작은 즉시값은 `ptr64[mem] = 123;` 형태로 가능(범위 제한 있음).
 
 ## Roadmap
 
