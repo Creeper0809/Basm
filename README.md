@@ -64,7 +64,7 @@ if (rax > 5) {
 
 현재 Stage1에서 실제로 지원되는 문법/제약은 아래 문서에 정리되어 있습니다.
 
-- [page/syntax.md](page/syntax.md)
+- [syntax.md](syntax.md)
 
 ### 자주 헷갈리는 포인트(요약)
 
