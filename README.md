@@ -64,7 +64,7 @@ if (rax > 5) {
 
 현재 Stage1에서 실제로 지원되는 문법/제약은 아래 문서에 정리되어 있습니다.
 
-- [syntax.md](syntax.md)
+- [docs/syntax.md](docs/syntax.md)
 
 ### 자주 헷갈리는 포인트(요약)
 
@@ -107,12 +107,21 @@ if (rax > 5) {
 ├── include/
 │   ├── consts.inc
 │   └── macros.inc
+├── docs/              # 문서(Stage1 문법)
+│   └── syntax.md
 ├── src/
 │   ├── emitter.inc
+│   └── emitter/
+│       ├── emitter_instr.inc
+│       └── emitter_runtime.inc
 │   ├── cli.inc
 │   ├── elf64.inc
 │   ├── lexer.inc
-│   ├── parser.inc
+│   ├── parser.inc     # parser control tower (includes parser/ modules)
+│   └── parser/
+│       ├── parser_stmt.inc
+│       ├── parser_sym.inc
+│       └── parser_util.inc
 │   └── util.inc
 ├── tools/
 │   └── basm_driver.c   # gcc 링커 드라이버 매핑 
@@ -123,7 +132,9 @@ if (rax > 5) {
 
 - `basm.asm`: 엔트리 포인트. 각 모듈을 `%include`로 묶습니다.
 - `include/`: 공용 상수/매크로.
-- `src/`: CLI/파서/IR/백엔드/ELF64 등 단계별 모듈.
+- `src/`: CLI/렉서/파서/에미터/유틸 등 Stage1 모듈.
+- `src/parser/`: 파서 내부 모듈(심볼/유틸/statement). 앞으로 alias/const/layout/while가 주로 여기로 들어갑니다.
+- `docs/`: Stage1 문서.
 - `examples/`: Basm/Bpp 예제 코드.
 - `build/`: 컴파일러 빌드 산출물.
 

@@ -28,7 +28,7 @@ $(eval $(ARG1):;@:)
 endif
 endif
 
-.PHONY: build clean compile run print install uninstall go asm driver
+.PHONY: build clean compile run print install uninstall go asm driver test
 
 build: driver
 	@mkdir -p $(BUILD_DIR)
@@ -67,3 +67,6 @@ install: build
 
 uninstall:
 	rm -f $(BINDIR)/basm $(BINDIR)/basm-cc
+
+test: build
+	bash tools/test.sh
