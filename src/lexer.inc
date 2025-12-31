@@ -17,11 +17,18 @@ section .text
 %define TOK_RBRACK  14
 %define TOK_PLUS    15
 %define TOK_MINUS   16
+%define TOK_COLON   42
 %define TOK_KW_PTR8 17
+%define TOK_KW_PTR16 45
+%define TOK_KW_PTR32 46
 %define TOK_KW_PTR64 18
 %define TOK_STR    19
 
 %define TOK_KW_IF   40
+%define TOK_KW_ALIAS 41
+%define TOK_KW_CONST 43
+%define TOK_KW_LAYOUT 44
+%define TOK_KW_WHILE 47
 
 ; operators (Stage1: minimal but explicit)
 %define TOK_STAR   20
@@ -102,6 +109,8 @@ lexer_next:
 	je lexer_make_semi
 	cmp al, ','
 	je lexer_make_comma
+	cmp al, ':'
+	je lexer_make_colon
 	cmp al, '='
 	je lexer_make_eq_or_eqeq
 	cmp al, '['
@@ -558,6 +567,12 @@ lexer_make_comma:
 	mov rax, TOK_COMMA
 	ret
 
+lexer_make_colon:
+	call lexer_make_punct
+	mov qword [lexer_tok_kind], TOK_COLON
+	mov rax, TOK_COLON
+	ret
+
 lexer_make_eq:
 	call lexer_make_punct
 	mov qword [lexer_tok_kind], TOK_EQ
@@ -667,6 +682,8 @@ lexer_read_ident:
 .chk4:
 	cmp al, '_'
 	je .adv
+	cmp al, '.'
+	je .adv
 	jmp .done
 .adv:
 	inc r8
@@ -716,6 +733,80 @@ lexer_read_ident:
 	ret
 
 .ident:
+	; keyword: alias
+	cmp rdx, 5
+	jne .ident_const
+	cmp byte [rax + 0], 'a'
+	jne .ident_const
+	cmp byte [rax + 1], 'l'
+	jne .ident_const
+	cmp byte [rax + 2], 'i'
+	jne .ident_const
+	cmp byte [rax + 3], 'a'
+	jne .ident_const
+	cmp byte [rax + 4], 's'
+	jne .ident_const
+	mov qword [lexer_tok_kind], TOK_KW_ALIAS
+	mov rax, TOK_KW_ALIAS
+	ret
+
+.ident_const:
+	; keyword: const
+	cmp rdx, 5
+	jne .ident_layout
+	cmp byte [rax + 0], 'c'
+	jne .ident_layout
+	cmp byte [rax + 1], 'o'
+	jne .ident_layout
+	cmp byte [rax + 2], 'n'
+	jne .ident_layout
+	cmp byte [rax + 3], 's'
+	jne .ident_layout
+	cmp byte [rax + 4], 't'
+	jne .ident_layout
+	mov qword [lexer_tok_kind], TOK_KW_CONST
+	mov rax, TOK_KW_CONST
+	ret
+
+.ident_layout:
+	; keyword: layout
+	cmp rdx, 6
+	jne .ident_while
+	cmp byte [rax + 0], 'l'
+	jne .ident_while
+	cmp byte [rax + 1], 'a'
+	jne .ident_while
+	cmp byte [rax + 2], 'y'
+	jne .ident_while
+	cmp byte [rax + 3], 'o'
+	jne .ident_while
+	cmp byte [rax + 4], 'u'
+	jne .ident_while
+	cmp byte [rax + 5], 't'
+	jne .ident_while
+	mov qword [lexer_tok_kind], TOK_KW_LAYOUT
+	mov rax, TOK_KW_LAYOUT
+	ret
+
+.ident_while:
+	; keyword: while
+	cmp rdx, 5
+	jne .ident_if
+	cmp byte [rax + 0], 'w'
+	jne .ident_if
+	cmp byte [rax + 1], 'h'
+	jne .ident_if
+	cmp byte [rax + 2], 'i'
+	jne .ident_if
+	cmp byte [rax + 3], 'l'
+	jne .ident_if
+	cmp byte [rax + 4], 'e'
+	jne .ident_if
+	mov qword [lexer_tok_kind], TOK_KW_WHILE
+	mov rax, TOK_KW_WHILE
+	ret
+
+.ident_if:
 	; keyword: if
 	cmp rdx, 2
 	jne .ident_ptr8
@@ -745,6 +836,40 @@ lexer_read_ident:
 
 .maybe_ptr64:
 	cmp rdx, 5
+	jne .maybe_ptr16
+	cmp byte [rax + 0], 'p'
+	jne .maybe_ptr16
+	cmp byte [rax + 1], 't'
+	jne .maybe_ptr16
+	cmp byte [rax + 2], 'r'
+	jne .maybe_ptr16
+	cmp byte [rax + 3], '6'
+	jne .maybe_ptr16
+	cmp byte [rax + 4], '4'
+	jne .maybe_ptr16
+	mov qword [lexer_tok_kind], TOK_KW_PTR64
+	mov rax, TOK_KW_PTR64
+	ret
+
+.maybe_ptr16:
+	cmp rdx, 5
+	jne .maybe_ptr32
+	cmp byte [rax + 0], 'p'
+	jne .maybe_ptr32
+	cmp byte [rax + 1], 't'
+	jne .maybe_ptr32
+	cmp byte [rax + 2], 'r'
+	jne .maybe_ptr32
+	cmp byte [rax + 3], '1'
+	jne .maybe_ptr32
+	cmp byte [rax + 4], '6'
+	jne .maybe_ptr32
+	mov qword [lexer_tok_kind], TOK_KW_PTR16
+	mov rax, TOK_KW_PTR16
+	ret
+
+.maybe_ptr32:
+	cmp rdx, 5
 	jne .ident2
 	cmp byte [rax + 0], 'p'
 	jne .ident2
@@ -752,12 +877,12 @@ lexer_read_ident:
 	jne .ident2
 	cmp byte [rax + 2], 'r'
 	jne .ident2
-	cmp byte [rax + 3], '6'
+	cmp byte [rax + 3], '3'
 	jne .ident2
-	cmp byte [rax + 4], '4'
+	cmp byte [rax + 4], '2'
 	jne .ident2
-	mov qword [lexer_tok_kind], TOK_KW_PTR64
-	mov rax, TOK_KW_PTR64
+	mov qword [lexer_tok_kind], TOK_KW_PTR32
+	mov rax, TOK_KW_PTR32
 	ret
 
 .ident2:

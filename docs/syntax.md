@@ -1,6 +1,6 @@
 # Basm Stage1 문법(현재 구현 기준)
 
-이 문서는 **현재 레포의 Stage1 컴파일러가 실제로 처리할 수 있는 문법**을 기준으로 정리한 “사용자 관점 스펙”입니다. (파서/렉서 구현 + `examples/hello.b` 동작 기준)
+이 문서는 **현재 레포의 Stage1 컴파일러가 실제로 처리할 수 있는 문법**을 기준으로 정리한 “사용자 관점 스펙”입니다. (파서/렉서 구현 + `examples/syntax.b` 동작 기준)
 
 > 핵심 컨셉: **High-Level Assembly**
 > - 레지스터를 숨기지 않고 직접 다룸
@@ -23,7 +23,7 @@ rax += 1; // 여기부터 끝까지 주석
 ```
 
 ### 키워드
-- `func`, `var`, `if`, `ptr8`, `ptr64`
+- `func`, `var`, `const`, `layout`, `if`, `while`, `ptr8`, `ptr16`, `ptr32`, `ptr64`, `alias`
 
 ### 식별자(ident)
 - 함수 이름, 변수 이름(전역/로컬)로 사용됩니다.
@@ -87,6 +87,47 @@ var g_bytes[4];
 
 ---
 
+## 3.1) 전역 상수 선언(const)
+
+Stage1에서는 `const`를 **파일 최상단(전역 영역)** 에서만 선언할 수 있습니다.
+
+```c
+const N = 100;
+```
+
+- 형태: `const <NAME> = <INT>;`
+- `<NAME>`은 이후 문장에서 **즉시값(int)처럼** 사용할 수 있습니다.
+- 또한 `ptr*[ ... + const ]` 같은 주소식의 disp로도 사용할 수 있습니다.
+
+---
+
+## 3.2) 레이아웃 선언(layout)
+
+Stage1의 `layout`은 “구조체(field 오프셋)”를 간단히 쓰기 위한 기능입니다.
+역시 **전역 영역**에서만 선언할 수 있습니다.
+
+```c
+layout Foo {
+  ptr8  a;
+  ptr64 b;
+}
+```
+
+`layout Foo { ... }`는 아래 상수들을 자동으로 생성합니다.
+
+- `Foo.a`, `Foo.b` : 각 멤버의 byte offset
+- `Foo.SIZE` : 전체 크기(byte)
+
+예:
+
+```c
+ptr8[buf + Foo.a] = 1;
+```
+
+> 주의: Stage1의 layout은 alignment/padding 규칙이 아니라, **선언된 순서대로 size만큼 offset을 누적**하는 단순 규칙입니다.
+
+---
+
 ## 4) 함수 선언
 
 ### 기본 형태
@@ -136,22 +177,34 @@ func main() {
 
 ## 6) 주소식(addr)과 ptr 접근
 
-Stage1에서 메모리 접근은 `ptr8[...]`, `ptr64[...]` 형태로만 합니다.
+Stage1에서 메모리 접근은 `ptr8[...]`, `ptr16[...]`, `ptr32[...]`, `ptr64[...]` 형태로만 합니다.
 
 ### addr 문법
 `ptr*[addr]`의 `addr`는 아래 중 하나입니다.
 
 - `ident`
 - `ident + reg`  (reg는 **바이트 오프셋**)
+- `ident + int`
+- `ident + const`
 - `reg`
 - `reg + int`
 - `reg - int`
+- `reg + const`
+- `reg - const`
+
+추가 규칙/제약(Stage1):
+- `ident`가 alias이면, ident를 레지스터처럼 취급하여 `reg` addr 규칙으로 들어갑니다.
+- `ident` base에서 suffix는 **plus-only**이며, 아래 중 딱 1개만 허용됩니다.
+  - `ident + reg` 또는 `ident + int` 또는 `ident + const`
+- 그래서 `ptr8[buf + Foo.a + 8]`, `ptr8[Foo.a + buf]` 같은 형태는 아직 불가입니다.
 
 > **스케일(scale) 문법은 없습니다.**
 > 예를 들어 qword 배열처럼 “index*8”이 필요하면, 사용자가 직접 `rax = 8;` 같은 바이트 오프셋을 만들어야 합니다.
 
 ### 로드(load)
 - `reg = ptr8[addr];`
+- `reg = ptr16[addr];`
+- `reg = ptr32[addr];`
 - `reg = ptr64[addr];`
 
 예:
@@ -162,8 +215,18 @@ rax = ptr64[g_qwords + rax];
 
 ### 스토어(store)
 - `ptr8[addr] = (reg | int);`
+- `ptr16[addr] = (reg | int);`
+- `ptr32[addr] = (reg | int);`
 - `ptr64[addr] = reg;`
 - `ptr64[addr] = int;` 는 **signed 32-bit 범위에서만 허용**됩니다.
+
+추가 제약:
+- `ptr16[...] = int`는 `0..65535` 범위만 허용됩니다.
+- `ptr32[...] = int`는 `0..0xFFFFFFFF` 범위만 허용됩니다.
+
+레지스터 폭(중요):
+- Stage1의 레지스터 토큰은 64-bit 이름만 인식하지만, `ptr8/16/32` 접근에서는 내부적으로 `al/ax/eax`, `r8b/r8w/r8d`처럼 **하위 폭 레지스터로 변환**해서 emit 합니다.
+- 따라서 `ptr16[...] = rax;` 처럼 “64-bit 레지스터 이름”을 써도 동작합니다(단, 변환 가능한 레지스터만).
 
 중요: x86-64는 `mov qword [mem], imm64` 인코딩이 없어서, 큰 64비트 상수는 아래처럼 해야 합니다.
 
@@ -178,14 +241,33 @@ ptr64[qw + rax] = r11;
 
 Stage1은 “표현식 우선순위” 같은 것을 거의 지원하지 않고, 아래 문장들만 지원합니다.
 
+### 7.0 alias (레지스터 별칭)
+형태:
+```c
+alias <reg> : <name>;
+```
+
+- `<name>`은 이후 문장에서 **레지스터처럼** 사용할 수 있습니다.
+- 예:
+```c
+alias r12 : count;
+count = 0;
+count += 1;
+```
+
+주의:
+- 런타임 호출(`print_dec`, `print_str`)은 일부 레지스터를 clobber 합니다. 카운터처럼 값 유지가 필요하면 `r12` 같은 callee-saved 쪽을 쓰는 것이 안전합니다.
+
 ### 7.1 레지스터 대입(=)
 ```c
 rax = 123;
 rax = rbx;
 rax = ptr8[buf + rdx];
+rax = ptr16[buf + rdx];
+rax = ptr32[buf + rdx];
 rax = ptr64[g_qword];
 ```
-- RHS는 `int | reg | ptr8[...] | ptr64[...]` 중 하나만 올 수 있습니다.
+- RHS는 `int | reg | ptr8[...] | ptr16[...] | ptr32[...] | ptr64[...]` 중 하나만 올 수 있습니다.
 - `rax = rbx + 1;` 같은 일반 표현식은 **현재 불가**입니다.
 
 ### 7.2 복합 대입(Compound Assignment)
@@ -211,7 +293,7 @@ rcx <<= 6;
 ident '(' [args] ')' ';'
 ```
 - 인자는 최대 6개
-- 인자 타입: `int | reg | str | ptr8[...] | ptr64[...]`
+- 인자 타입: `int | reg | str | ptr8[...] | ptr16[...] | ptr32[...] | ptr64[...]`
 
 예:
 ```c
@@ -225,15 +307,43 @@ print_dec(rdi);
 
 ---
 
-## 8) if 문 (비교 연산은 여기서만 가능)
+## 8) while 문 (비교 연산은 조건에서만 가능)
 
 ### 문법
 ```c
-if ( <reg> <cmp> <int|reg> ) { <stmt>* }
+while ( <reg|alias> <cmp> <int|reg|alias|const> ) { <stmt>* }
 ```
 
 - `<cmp>`: `== != < <= > >=`
-- 비교 연산은 **if 조건에서만 허용**됩니다.
+- 비교 연산은 **if/while 조건에서만 허용**됩니다.
+- `break`/`continue`는 아직 없습니다.
+
+예:
+
+```c
+alias rcx : counter;
+alias rbx : sum;
+
+counter = 1;
+sum = 0;
+
+while (counter <= 100) {
+  sum += counter;
+  counter += 1;
+}
+```
+
+---
+
+## 9) if 문 (비교 연산은 조건에서만 가능)
+
+### 문법
+```c
+if ( <reg|alias> <cmp> <int|reg|alias|const> ) { <stmt>* }
+```
+
+- `<cmp>`: `== != < <= > >=`
+- 비교 연산은 **if/while 조건에서만 허용**됩니다.
 - `else`는 없습니다.
 
 예:
@@ -254,17 +364,10 @@ if (rbx >= 64) { r11 = 222; }
 
 ---
 
-## 9) 한 파일로 기능 확인하기
+## 10) 한 파일로 기능 확인하기
 
-현재 구현된 대부분의 기능은 [examples/hello.b](../examples/hello.b)에서 한 번에 볼 수 있습니다.
+현재 구현된 대부분의 기능은 아래 예제에서 한 번에 볼 수 있습니다.
 
----
-
-## 10) 현재 Stage1의 의도적인 제한(요약)
-
-- 일반 수식/표현식 없음(문장 기반)
-- 비교 연산은 `if` 조건에서만
-- shift RHS는 즉시값만
-- `ptr64[mem] = imm64` 직접 저장 불가(큰 상수는 reg 경유)
-- 함수 인자(선언)는 파싱만 하고 아직 사용 불가
-- 주석은 `//` 한 줄 주석만
+- [examples/syntax.b](../examples/syntax.b)
+- [examples/while_sum_100.b](../examples/while_sum_100.b)
+- [examples/hello_world.b](../examples/hello_world.b)
