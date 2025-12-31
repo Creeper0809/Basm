@@ -23,7 +23,7 @@ rax += 1; // 여기부터 끝까지 주석
 ```
 
 ### 키워드
-- `func`, `var`, `const`, `layout`, `if`, `while`, `ptr8`, `ptr16`, `ptr32`, `ptr64`, `alias`
+- `func`, `var`, `const`, `layout`, `if`, `while`, `break`, `continue`, `asm`, `ptr8`, `ptr16`, `ptr32`, `ptr64`, `alias`
 
 ### 식별자(ident)
 - 함수 이름, 변수 이름(전역/로컬)로 사용됩니다.
@@ -46,6 +46,11 @@ rax += 1; // 여기부터 끝까지 주석
 - 큰따옴표: `"..."`
 - 지원 escape: `\n`, `\t`, `\"`, `\\`
 - 문자열 내부에 “raw newline(실제 개행)”은 허용되지 않습니다.
+
+### 문자 리터럴(char)
+- 작은따옴표: `'A'`
+- 지원 escape: `\n`, `\t`, `\'`, `\\`
+- 내부적으로 **ASCII 코드값(정수)** 으로 취급됩니다.
 
 ---
 
@@ -293,7 +298,7 @@ rcx <<= 6;
 ident '(' [args] ')' ';'
 ```
 - 인자는 최대 6개
-- 인자 타입: `int | reg | str | ptr8[...] | ptr16[...] | ptr32[...] | ptr64[...]`
+- 인자 타입: `int | char | reg | str | ptr8[...] | ptr16[...] | ptr32[...] | ptr64[...]`
 
 예:
 ```c
@@ -305,18 +310,48 @@ print_dec(rdi);
 - 호출은 일반적으로 caller-saved 레지스터를 많이 clobber 합니다.
   - 예제처럼, “값을 레지스터에 들고 print_* 호출을 여러 번” 할 때는 중간에 값이 깨질 수 있으니 다시 로드하거나(또는 callee-saved 사용) 주의해야 합니다.
 
+### 7.4 asm 블록 (NASM escape hatch)
+
+형태:
+```c
+asm { "<nasm text>" ... };
+```
+
+- `{}` 안에는 **문자열 리터럴(str)** 을 1개 이상 나열합니다.
+  - 구분은 공백/개행 또는 `;` 모두 가능합니다.
+- 각 문자열은 그대로 NASM 출력 `.text`에 삽입됩니다.
+- 문자열 안에 raw newline(실제 개행)은 불가이므로, 줄바꿈은 `\n` escape를 써야 합니다.
+
+예:
+```c
+func main() {
+  asm {
+    "mov rdi, 777\n"
+    "call print_dec\n"
+  };
+}
+```
+
+주의(footguns):
+- 이 블록은 **컴파일러가 레지스터/스택/호출규약을 보호해주지 않습니다.**
+- 잘못된 NASM을 넣으면 어셈블 단계에서 실패합니다.
+
 ---
 
 ## 8) while 문 (비교 연산은 조건에서만 가능)
 
 ### 문법
 ```c
-while ( <reg|alias> <cmp> <int|reg|alias|const> ) { <stmt>* }
+while ( (<reg|alias> | ptr8[addr]) <cmp> <int|reg|alias|const|char> ) { <stmt>* }
 ```
 
 - `<cmp>`: `== != < <= > >=`
 - 비교 연산은 **if/while 조건에서만 허용**됩니다.
-- `break`/`continue`는 아직 없습니다.
+- `break;` / `continue;` 를 지원합니다(while 안에서만 사용 가능).
+
+추가:
+- `ptr8[addr]`를 LHS로 쓴 비교는 **unsigned byte 비교**로 처리됩니다.
+- `char` 리터럴(`'A'`, `'\n'`)은 RHS에 쓸 수 있으며 내부적으로 정수(ASCII)로 취급됩니다.
 
 예:
 
@@ -339,7 +374,7 @@ while (counter <= 100) {
 
 ### 문법
 ```c
-if ( <reg|alias> <cmp> <int|reg|alias|const> ) { <stmt>* }
+if ( (<reg|alias> | ptr8[addr]) <cmp> <int|reg|alias|const|char> ) { <stmt>* }
 ```
 
 - `<cmp>`: `== != < <= > >=`
@@ -371,3 +406,231 @@ if (rbx >= 64) { r11 = 222; }
 - [examples/syntax.b](../examples/syntax.b)
 - [examples/while_sum_100.b](../examples/while_sum_100.b)
 - [examples/hello_world.b](../examples/hello_world.b)
+- [examples/asm_block.b](../examples/asm_block.b)
+- [examples/cat_readme.b](../examples/cat_readme.b)
+
+---
+
+## 11) 런타임 내장 함수(Runtime Builtins)
+
+Stage1은 출력 바이너리에 아래 런타임 함수들이 함께 포함됩니다.
+
+또한 엔트리포인트 `_start`는 Linux 프로세스 스택의 인자 정보를 꺼내서 **`main(argc, argv)`** 형태로 호출합니다.
+
+- `argc`는 `rdi`로 전달됩니다.
+- `argv`는 `rsi`로 전달됩니다.
+  - `argv`는 포인터 배열입니다. 즉 `argv[0]`는 `ptr64[rsi + 0]`, `argv[1]`는 `ptr64[rsi + 8]` 입니다.
+
+- `print_str(ptr)` : null-terminated 문자열 출력
+- `print_dec(u64)` : 10진수 출력
+- `heap_alloc(size)` : bump allocator. `size` 바이트를 할당하고, **반환 포인터를 `rax`로 돌려줍니다** (OOM이면 `rax=0`).
+  - 할당은 8바이트 단위로 올림(정렬)됩니다.
+- `memcpy(dst, src, len)` : 메모리 복사. 반환값은 `rax=dst`
+- `streq(a, b)` : null-terminated 문자열 비교. 같으면 `rax=1`, 다르면 `rax=0`
+- `strlen(ptr)` : null-terminated 문자열 길이. 반환값은 `rax=len`
+
+또한 Linux x86_64 시스템콜 래퍼도 포함됩니다.
+
+- `sys_read(fd, buf, len)` : `read(2)` 래퍼. 반환값 `rax = 읽은 바이트 수` (에러면 음수)
+- `sys_write(fd, buf, len)` : `write(2)` 래퍼. 반환값 `rax = 쓴 바이트 수` (에러면 음수)
+- `sys_open(path, flags, mode)` : `open(2)` 래퍼. 반환값 `rax = fd` (에러면 음수)
+- `sys_fstat(fd, statbuf)` : `fstat(2)` 래퍼. 반환값 `rax = 0` (에러면 음수)
+- `sys_close(fd)` : `close(2)` 래퍼. 반환값 `rax = 0` (에러면 음수)
+- `sys_exit(code)` : `exit(2)` 래퍼. **반환하지 않습니다**
+
+예:
+- [examples/cat_readme.b](../examples/cat_readme.b)
+
+반환값을 쓰려면 `rax`를 alias로 잡아두는 패턴을 사용합니다.
+
+```c
+alias rax : p;
+heap_alloc(16);
+ptr8[p + 0] = 65;
+```
+
+`rax`는 caller-saved라서(그리고 다음 `heap_alloc` 호출에서도) 값이 쉽게 덮입니다.
+포인터를 계속 들고 있어야 하면 호출 직후 callee-saved 레지스터로 옮겨서 보관하는 게 안전합니다.
+
+```c
+alias rax : tmp;
+alias r12 : p1;
+alias r13 : p2;
+
+heap_alloc(16);
+p1 = tmp;
+
+heap_alloc(32);
+p2 = tmp;
+
+```
+
+---
+
+## 12) ABI / 호출 규약 (기술 스펙)
+
+이 문서의 이 섹션부터는 “사용자 문법”을 넘어서, **생성되는 코드와 런타임의 동작 규약(ABI)** 를 명시합니다.
+
+### 타겟/환경
+- 아키텍처: **x86_64**
+- 실행 환경: **Linux**
+- 어셈블러/링커: NASM + ld
+
+### 함수 호출 규약
+- 인자 전달: System V AMD64 규약 스타일로 **최대 6개까지 레지스터로 전달**
+  - 1..6번째 인자 레지스터: `rdi, rsi, rdx, rcx, r8, r9`
+- 반환값: `rax`
+
+주의:
+- Stage1은 “레지스터를 숨기지 않는 언어”라서, **컴파일러가 callee-saved 보존을 강제하지 않습니다.**
+- 런타임 builtins 및 사용자 함수 호출 전후로 값 보존이 필요하면, 사용자가 직접(예: callee-saved 레지스터 활용, 또는 `asm`로 push/pop) 관리해야 합니다.
+
+### 런타임 builtins: clobber 규칙(중요)
+
+아래는 “이 함수 호출 이후 값이 보존되지 않는 레지스터(최소 보장)” 기준으로 적습니다.
+
+- `print_str(ptr)`
+  - 인자: `rdi=ptr`
+  - 반환: 없음(의미 있는 반환값 없음)
+  - clobber(최소): `rax, rdi, rsi, rdx`
+
+- `print_dec(u64)`
+  - 인자: `rdi=value`
+  - 반환: 없음(의미 있는 반환값 없음)
+  - clobber(최소): `rax, rcx, rdx, r8, r9, rdi`
+
+- `heap_alloc(size)`
+  - 인자: `rdi=size`
+  - 반환: `rax=ptr` (OOM이면 `rax=0`)
+  - 정렬: 요청 size는 **8바이트 단위로 올림** 처리됨
+  - clobber(최소): `rax, rcx, rdx, r8`
+
+- `memcpy(dst, src, len)`
+  - 인자: `rdi=dst, rsi=src, rdx=len`
+  - 반환: `rax=dst`
+  - 부작용(중요): 내부가 `rep movsb`라서 **호출 후 `rdi`/`rsi`가 증가한 값으로 남습니다.**
+  - clobber(최소): `rax, rcx, rdi, rsi`
+
+- `streq(a, b)`
+  - 인자: `rdi=a, rsi=b` (둘 다 null-terminated)
+  - 반환: `rax=1`(같음) / `rax=0`(다름)
+  - clobber(최소): `rax, rcx, rdx, r8`
+
+- `strlen(ptr)`
+  - 인자: `rdi=ptr`
+  - 반환: `rax=len`
+  - clobber(최소): `rax`
+
+### syscall wrappers: 동작/에러/클로버
+
+이 래퍼들은 Linux x86_64의 `syscall` 명령을 그대로 사용합니다.
+
+- 공통:
+  - 반환: `rax`에 커널 반환값이 들어옵니다.
+  - 에러: 보통 **음수(-errno)** 로 리턴됩니다(예: `rax < 0`).
+  - `syscall` 자체 clobber: **`rcx`, `r11`** (하드웨어/ABI 규칙)
+
+- `sys_read(fd, buf, len)`
+  - 인자: `rdi=fd, rsi=buf, rdx=len`
+  - 반환: `rax=읽은 바이트 수` (EOF=0, 에러<0)
+  - clobber(최소): `rax, rcx, r11`
+
+- `sys_write(fd, buf, len)`
+  - 인자: `rdi=fd, rsi=buf, rdx=len`
+  - 반환: `rax=쓴 바이트 수` (에러<0)
+  - clobber(최소): `rax, rcx, r11`
+
+- `sys_open(path, flags, mode)`
+  - 인자: `rdi=path, rsi=flags, rdx=mode`
+  - 반환: `rax=fd` (에러<0)
+  - clobber(최소): `rax, rcx, r11`
+
+- `sys_fstat(fd, statbuf)`
+  - 인자: `rdi=fd, rsi=statbuf`
+  - 반환: `rax=0` (에러<0)
+  - clobber(최소): `rax, rcx, r11`
+
+- `sys_close(fd)`
+  - 인자: `rdi=fd`
+  - 반환: `rax=0` (에러<0)
+  - clobber(최소): `rax, rcx, r11`
+
+- `sys_exit(code)`
+  - 인자: `rdi=code`
+  - 반환: 없음(프로세스 종료)
+
+---
+
+## 13) 코드 생성(Codegen) / 출력 ASM 구조
+
+Stage1 컴파일러는 `.b` 소스를 **NASM용 ASM 텍스트** 로 변환합니다.
+
+### 출력 헤더
+출력 ASM은 대략 아래 헤더를 포함합니다.
+
+- `BITS 64`
+- `DEFAULT REL`
+- `global _start`
+- 런타임/헬퍼 함수 정의
+
+### 엔트리포인트
+- 최종 엔트리는 `_start` 입니다.
+- `_start`는 힙을 초기화한 뒤 `main`을 호출하고, `syscall exit(0)`로 종료합니다.
+  - 즉, `main`의 `ret` 값은 **현재 종료 코드로 사용되지 않습니다.**
+
+### 섹션 배치(개략)
+- `.text` : `_start`, 런타임 builtins, 사용자 함수 코드
+- `.data` : 전역 스칼라(`dq 0`), 문자열 리터럴(0-terminated)
+- `.bss`  : 전역 byte 배열(`resb`), 힙 버퍼(`heap_buf`) 및 포인터(`heap_cur`)
+
+### 로컬 변수 레이아웃
+- 스택 기준점은 `rbp`입니다.
+- 로컬 스칼라(`var x;`)는 `push 0`으로 **0 초기화** 된 8바이트 슬롯을 잡습니다.
+- 로컬 배열(`var buf[N];`)은 `sub rsp, round_up(N,8)`로 잡고 **초기화하지 않습니다.**
+- 로컬 변수 주소는 내부적으로 `[rbp-<offset>]` 형태로 내려갑니다.
+
+### 문자열 리터럴의 배치
+- 문자열 리터럴은 `.data`에 `db <bytes>, 0`로 생성됩니다(null-terminated).
+- 같은 문자열을 dedup(재사용)하는 최적화는 아직 없습니다(등장할 때마다 새 label).
+
+### 라벨 네이밍(현재 구현)
+- if: `Lif_end_<id>`
+- while: `Lwhile_start_<id>`, `Lwhile_end_<id>`
+
+### asm 블록의 의미
+- `asm { "..." }`는 해당 문자열의 바이트를 **그대로 `.text`에 삽입**합니다.
+- 컴파일러는 올바른 섹션/정렬/레지스터 보존을 보장하지 않습니다.
+
+---
+
+## 14) 에러 모델 / 제한(Limits)
+
+### 에러 모델
+- 대부분의 오류는 “parse error”로 라인 번호와 함께 즉시 종료합니다.
+- NASM 문법 오류는 컴파일러가 아닌 **어셈블 단계(NASM)** 에서 실패합니다(특히 `asm` 블록).
+
+### 주요 제한(현재 구현 기준)
+- 함수 인자: 최대 6개까지 파싱되지만, **인자를 로컬로 바인딩해 쓰는 기능은 미구현**
+- 호출 인자: 최대 6개
+- 심볼 테이블: 최대 256개(초과 시 에러)
+- 출력 ASM 버퍼: 기본 1MiB(`EMIT_BUF_MAX`) (초과 시 에러)
+- 힙 크기: 1MiB (`HEAP_SIZE`) 고정
+
+---
+
+## 15) 미지원/비정의 동작(Unsupported / Undefined Behavior)
+
+Stage1의 목표는 “표현식 언어”가 아니라 “High-Level Assembly”이므로, 아래는 의도적으로 미지원이거나 동작이 정의되지 않습니다.
+
+### 문법 미지원
+- `return;` / `return expr;`
+- `else`
+- 일반 표현식(`rax = rbx + 1;`, `rax = (a+b)*c;` 등)
+- 음수 리터럴(`-1`) 직접 표기
+- 스케일드 인덱싱(`base + index*8`) 주소식
+
+### 동작/규약 주의
+- builtin 호출은 많은 레지스터를 clobber 하며, 컴파일러가 보존하지 않습니다.
+- `memcpy`는 호출 후 `rdi/rsi`가 증가합니다(원본 포인터가 필요하면 호출 전에 보관).
+- syscall 래퍼의 에러(-errno)는 사용자가 직접 검사해야 합니다.
+```

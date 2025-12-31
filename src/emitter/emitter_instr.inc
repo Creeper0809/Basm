@@ -426,6 +426,42 @@ emit_cmp_reg_imm:
 	mov r9, emit_cmp_prefix_len
 	jmp emit_binop_reg_src
 
+; rdi=mem_ptr, rsi=mem_len, rdx=src_ptr, rcx=src_len
+; emits: "    cmp byte " + mem + ", " + src + "\n"
+emit_cmp_mem8_src:
+	push rbp
+	mov rbp, rsp
+	PUSH_R12_R15
+
+	mov r12, rdi
+	mov r13, rsi
+	mov r14, rdx
+	mov r15, rcx
+
+	lea rsi, [rel emit_cmp_byte_prefix]
+	mov rdx, emit_cmp_byte_prefix_len
+	call emit_append
+
+	mov rsi, r12
+	mov rdx, r13
+	call emit_append
+
+	lea rsi, [rel emit_mov_mid]
+	mov rdx, emit_mov_mid_len
+	call emit_append
+
+	mov rsi, r14
+	mov rdx, r15
+	call emit_append
+
+	lea rsi, [rel emit_nl]
+	mov rdx, 1
+	call emit_append
+
+	POP_R15_R12
+	pop rbp
+	ret
+
 ; rdi=cc_ptr, rsi=cc_len, rdx=reg8_ptr, rcx=reg8_len
 ; emits: "    set" + cc + " " + reg8 + "\n"
 emit_setcc_reg8:
@@ -891,6 +927,9 @@ emit_shr_prefix:  db "    shr "
 emit_shr_prefix_len: equ $-emit_shr_prefix
 emit_cmp_prefix:  db "    cmp "
 emit_cmp_prefix_len: equ $-emit_cmp_prefix
+
+emit_cmp_byte_prefix: db "    cmp byte "
+emit_cmp_byte_prefix_len: equ $-emit_cmp_byte_prefix
 
 emit_set_prefix: db "    set"
 emit_set_prefix_len: equ $-emit_set_prefix

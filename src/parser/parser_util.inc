@@ -503,6 +503,140 @@ parser_intern_string:
 	pop rbp
 	ret
 
+; rdi=raw_ptr, rsi=raw_len (may contain escapes)
+; Emits the unescaped bytes directly into the current text output.
+parser_emit_asm_str:
+	push rbp
+	mov rbp, rsp
+	push rbx
+	push r12
+	push r13
+	push r14
+	push r15
+
+	mov r14, rdi
+	mov r15, rsi
+	xor r12d, r12d               ; raw_index
+	xor ebx, ebx                 ; out_len
+
+	lea r13, [rel parser_asm_buf]
+
+.loop:
+	cmp r12, r15
+	jae .flush_done
+	mov al, [r14 + r12]
+	cmp al, 92
+	je .esc
+	; normal byte
+	mov [r13 + rbx], al
+	inc rbx
+	inc r12
+	jmp .maybe_flush
+
+.esc:
+	; escape sequence (lexer already validated)
+	mov al, [r14 + r12 + 1]
+	cmp al, 'n'
+	je .esc_n
+	cmp al, 't'
+	je .esc_t
+	cmp al, '"'
+	je .esc_q
+	cmp al, 92
+	je .esc_bs
+	; should be unreachable
+	jmp parser_err_expected_stmt
+.esc_n:
+	mov al, 10
+	jmp .emit_esc
+.esc_t:
+	mov al, 9
+	jmp .emit_esc
+.esc_q:
+	mov al, 34
+	jmp .emit_esc
+.esc_bs:
+	mov al, 92
+.emit_esc:
+	mov [r13 + rbx], al
+	inc rbx
+	add r12, 2
+
+.maybe_flush:
+	cmp rbx, PARSER_ASM_BUF_CAP
+	jb .loop
+	; flush buffer
+	lea rsi, [rel parser_asm_buf]
+	mov rdx, rbx
+	call emit_append
+	xor ebx, ebx
+	jmp .loop
+
+.flush_done:
+	test rbx, rbx
+	jz .done
+	lea rsi, [rel parser_asm_buf]
+	mov rdx, rbx
+	call emit_append
+
+.done:
+	pop r15
+	pop r14
+	pop r13
+	pop r12
+	pop rbx
+	pop rbp
+	ret
+
+; rdi=raw_ptr, rsi=raw_len (1 byte or 2 bytes for escapes like \n)
+; returns rax=imm_ptr, rdx=imm_len (decimal string in parser_num_buf)
+parser_char_to_imm_slice:
+	push rbp
+	mov rbp, rsp
+	push rbx
+
+	mov rbx, rdi
+	cmp rsi, 1
+	je .one
+	cmp rsi, 2
+	jne parser_err_expected_stmt
+	cmp byte [rbx + 0], 92
+	jne parser_err_expected_stmt
+	mov al, [rbx + 1]
+	cmp al, 'n'
+	je .esc_n
+	cmp al, 't'
+	je .esc_t
+	cmp al, "'"
+	je .esc_sq
+	cmp al, 92
+	je .esc_bs
+	jmp parser_err_expected_stmt
+
+.esc_n:
+	mov rdi, 10
+	jmp .emit
+.esc_t:
+	mov rdi, 9
+	jmp .emit
+.esc_sq:
+	mov rdi, 39
+	jmp .emit
+.esc_bs:
+	mov rdi, 92
+	jmp .emit
+
+.one:
+	movzx rdi, byte [rbx]
+
+.emit:
+	lea rsi, [rel parser_num_buf + 63]
+	call util_u64_to_dec          ; rax=num_ptr, rdx=num_len
+
+	pop rbx
+	pop rbp
+	ret
+
 ; Parses an address expression and builds a bracketed mem operand into parser_mem_buf.
 ; addr := ident | reg | reg (+|-) int
 ; Expects the opening '[' already consumed.
@@ -1365,11 +1499,16 @@ parser_str_end_suffix_len: equ $-parser_str_end_suffix
 parser_str_colon_nl: db ":",10
 parser_str_colon_nl_len: equ $-parser_str_colon_nl
 
+PARSER_ASM_BUF_CAP equ 4096
+
 section .bss
 parser_mem_buf:     resb 128
 parser_str_count:   resq 1
 parser_str_label_buf:     resb 64
 parser_str_end_label_buf: resb 80
+
+; scratch buffer for asm string unescaping
+parser_asm_buf: resb PARSER_ASM_BUF_CAP
 
 parser_namepool_idx: resq 1
 parser_namepool:     resb 8192

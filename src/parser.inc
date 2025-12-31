@@ -81,6 +81,8 @@ parser_parse_func:
 	mov qword [parser_if_count], 0
 	; reset per-function while label counter
 	mov qword [parser_while_count], 0
+	; reset per-function loop stack
+	mov qword [parser_loop_sp], 0
 
 	; func
 	mov rdi, TOK_KW_FUNC
@@ -414,6 +416,11 @@ parser_err_expected_int:
 	mov rsi, [lexer_tok_line]
 	call util_fatal_line
 
+parser_err_expected_asm_str:
+	lea rdi, [rel parser_msg_expected_asm_str]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
 parser_err_cmp_only_in_if:
 	lea rdi, [rel parser_msg_cmp_only_in_if]
 	mov rsi, [lexer_tok_line]
@@ -439,6 +446,16 @@ parser_err_store64_imm_too_big:
 	mov rsi, [lexer_tok_line]
 	call util_fatal_line
 
+parser_err_break_outside_loop:
+	lea rdi, [rel parser_msg_break_outside_loop]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
+parser_err_continue_outside_loop:
+	lea rdi, [rel parser_msg_continue_outside_loop]
+	mov rsi, [lexer_tok_line]
+	call util_fatal_line
+
 section .rodata
 parser_msg_expected_main: db "parse error: expected function name 'main'",10,0
 parser_msg_expected_ident: db "parse error: expected identifier",10,0
@@ -449,6 +466,8 @@ parser_msg_too_many_locals: db "parse error: too many symbols (max 256)",10,0
 
 parser_msg_expected_int: db "parse error: expected integer",10,0
 
+parser_msg_expected_asm_str: db "parse error: expected string literal inside asm{...}",10,0
+
 parser_msg_cmp_only_in_if: db "parse error: comparisons are only allowed inside if/while",10,0
 parser_msg_if_lhs_must_be_reg: db "parse error: if lhs must be a register",10,0
 parser_msg_expected_if_cmp: db "parse error: expected comparison operator in condition",10,0
@@ -456,6 +475,8 @@ parser_msg_expected_if_rhs: db "parse error: expected int or reg on rhs of if",1
 
 parser_msg_store64_imm_too_big: db "parse error: ptr64 store immediate must fit in signed 32-bit; load into a register first",10,0
 parser_msg_expected_addr: db "parse error: expected address inside ptr[]",10,0
+parser_msg_break_outside_loop: db "parse error: break used outside of while",10,0
+parser_msg_continue_outside_loop: db "parse error: continue used outside of while",10,0
 
 section .bss
 parser_seen_main:    resq 1

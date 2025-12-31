@@ -66,6 +66,8 @@ parser_parse_cond_emit_jfalse:
 	push r13
 	push r14
 	push r15
+	sub rsp, 8
+	mov qword [rsp], 0             ; lhs_kind: 0=reg lhs, 1=ptr8[mem] lhs (unsigned compare)
 
 	mov r14, rdi
 	mov r15, rsi
@@ -75,6 +77,8 @@ parser_parse_cond_emit_jfalse:
 
 	; lhs
 	call lexer_peek
+	cmp rax, TOK_KW_PTR8
+	je .lhs_ptr8
 	cmp rax, TOK_REG
 	je .lhs_reg
 	cmp rax, TOK_IDENT
@@ -88,6 +92,18 @@ parser_parse_cond_emit_jfalse:
 	mov r12, rax
 	mov r13, rdx
 	call lexer_next
+	jmp .after_lhs
+.lhs_ptr8:
+	; ptr8[addr] (unsigned byte compare)
+	mov qword [rsp], 1
+	call lexer_next
+	mov rdi, TOK_LBRACK
+	call lexer_expect
+	call parser_parse_mem_operand_after_lbrack
+	mov r12, rax
+	mov r13, rdx
+	mov rdi, TOK_RBRACK
+	call lexer_expect
 	jmp .after_lhs
 .lhs_reg:
 	mov r12, [lexer_tok_ptr]
@@ -118,11 +134,22 @@ parser_parse_cond_emit_jfalse:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .rhs_ok
+	cmp rax, TOK_CHAR
+	je .rhs_char
 	cmp rax, TOK_REG
 	je .rhs_ok
 	cmp rax, TOK_IDENT
 	je .rhs_ok
 	jmp parser_err_expected_if_rhs
+.rhs_char:
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call parser_char_to_imm_slice
+	mov r8, rax
+	mov r9, rdx
+	mov r11, TOK_INT
+	call lexer_next
+	jmp .rhs_have
 .rhs_ok:
 	mov r8, [lexer_tok_ptr]
 	mov r9, [lexer_tok_len]
@@ -145,6 +172,9 @@ parser_parse_cond_emit_jfalse:
 	call lexer_expect
 
 	; emit cmp
+	cmp qword [rsp], 0
+	jne .cmp_ptr8
+	; reg lhs
 	mov rdi, r12
 	mov rsi, r13
 	mov rdx, r8
@@ -156,9 +186,41 @@ parser_parse_cond_emit_jfalse:
 	jmp .after_cmp
 .cmp_imm:
 	call emit_cmp_reg_imm
+	jmp .after_cmp
+
+.cmp_ptr8:
+	; ptr8[mem] lhs: emit cmp byte [mem], (imm8|reg8)
+	cmp r11, TOK_INT
+	jne .cmp_ptr8_reg
+	; imm range-check (0..255)
+	mov rdi, r8
+	mov rsi, r9
+	call util_parse_u64
+	cmp rax, 0xff
+	ja parser_err_expected_if_rhs
+	mov rdi, r12
+	mov rsi, r13
+	mov rdx, r8
+	mov rcx, r9
+	call emit_cmp_mem8_src
+	jmp .after_cmp
+.cmp_ptr8_reg:
+	; rhs reg64 -> reg8
+	mov rdi, r8
+	mov rsi, r9
+	call parser_reg_to_reg8
+	mov r8, rax
+	mov r9, rdx
+	mov rdi, r12
+	mov rsi, r13
+	mov rdx, r8
+	mov rcx, r9
+	call emit_cmp_mem8_src
 .after_cmp:
 
 	; inverted jcc to target
+	cmp qword [rsp], 0
+	jne .inv_unsigned
 	cmp rbx, TOK_EQEQ
 	je .cc_ne
 	cmp rbx, TOK_NE
@@ -171,6 +233,35 @@ parser_parse_cond_emit_jfalse:
 	je .cc_le
 	; GE
 	jmp .cc_l
+.inv_unsigned:
+	cmp rbx, TOK_EQEQ
+	je .cc_ne
+	cmp rbx, TOK_NE
+	je .cc_e
+	cmp rbx, TOK_LT
+	je .ucc_ae
+	cmp rbx, TOK_LE
+	je .ucc_a
+	cmp rbx, TOK_GT
+	je .ucc_be
+	; GE
+	jmp .ucc_b
+.ucc_ae:
+	lea rdi, [rel parser_cc_ae]
+	mov rsi, parser_cc_ae_len
+	jmp .emit
+.ucc_a:
+	lea rdi, [rel parser_cc_a]
+	mov rsi, parser_cc_a_len
+	jmp .emit
+.ucc_be:
+	lea rdi, [rel parser_cc_be]
+	mov rsi, parser_cc_be_len
+	jmp .emit
+.ucc_b:
+	lea rdi, [rel parser_cc_b]
+	mov rsi, parser_cc_b_len
+	jmp .emit
 .cc_ne:
 	lea rdi, [rel parser_cc_ne]
 	mov rsi, parser_cc_ne_len
@@ -198,6 +289,7 @@ parser_parse_cond_emit_jfalse:
 	mov rdx, r14
 	mov rcx, r15
 	call emit_jcc
+	add rsp, 8
 
 	pop r15
 	pop r14
@@ -236,6 +328,12 @@ parser_parse_stmt:
 	je .stmt_if
 	cmp rax, TOK_KW_WHILE
 	je .stmt_while
+	cmp rax, TOK_KW_ASM
+	je .stmt_asm
+	cmp rax, TOK_KW_BREAK
+	je .stmt_break
+	cmp rax, TOK_KW_CONTINUE
+	je .stmt_continue
 	cmp rax, TOK_KW_PTR8
 	je .stmt_store8
 	cmp rax, TOK_KW_PTR16
@@ -278,6 +376,40 @@ parser_parse_stmt:
 
 	mov rdi, TOK_SEMI
 	call lexer_expect
+	jmp .done
+
+.stmt_asm:
+	; asm { "..." ... }
+	; Emits raw NASM text into the output (use \n escapes for newlines).
+	call lexer_next
+	mov rdi, TOK_LBRACE
+	call lexer_expect
+	call emit_text_section
+
+.asm_loop:
+	call lexer_peek
+	cmp rax, TOK_RBRACE
+	je .asm_done
+	cmp rax, TOK_STR
+	jne parser_err_expected_asm_str
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call parser_emit_asm_str
+	call lexer_next
+	call lexer_peek
+	cmp rax, TOK_SEMI
+	jne .asm_loop
+	call lexer_next
+	jmp .asm_loop
+
+.asm_done:
+	mov rdi, TOK_RBRACE
+	call lexer_expect
+	; optional trailing ';'
+	call lexer_peek
+	cmp rax, TOK_SEMI
+	jne .done
+	call lexer_next
 	jmp .done
 
 .stmt_ident:
@@ -329,6 +461,8 @@ parser_parse_stmt:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .eq_first
+	cmp rax, TOK_CHAR
+	je .eq_first
 	cmp rax, TOK_REG
 	je .eq_first
 	cmp rax, TOK_IDENT
@@ -348,6 +482,17 @@ parser_parse_stmt:
 	mov r12, [lexer_tok_ptr]
 	mov r13, [lexer_tok_len]
 	mov r11, rax                ; kind of first token
+	cmp r11, TOK_CHAR
+	jne .eq_maybe_ident
+	; char -> imm slice
+	mov rdi, r12
+	mov rsi, r13
+	call parser_char_to_imm_slice
+	mov r12, rax
+	mov r13, rdx
+	mov r11, TOK_INT
+	jmp .eq_tok_ok
+.eq_maybe_ident:
 	cmp r11, TOK_IDENT
 	jne .eq_tok_ok
 	; ident can be alias->reg or const->imm
@@ -431,6 +576,8 @@ parser_parse_stmt:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .bin_rhs
+	cmp rax, TOK_CHAR
+	je .bin_rhs
 	cmp rax, TOK_REG
 	je .bin_rhs
 	cmp rax, TOK_IDENT
@@ -439,6 +586,16 @@ parser_parse_stmt:
 .bin_rhs:
 	mov r12, [lexer_tok_ptr]
 	mov r13, [lexer_tok_len]
+	cmp rax, TOK_CHAR
+	jne .bin_maybe_ident
+	mov rdi, r12
+	mov rsi, r13
+	call parser_char_to_imm_slice
+	mov r12, rax
+	mov r13, rdx
+	mov rax, TOK_INT
+	jmp .bin_push
+.bin_maybe_ident:
 	cmp rax, TOK_IDENT
 	jne .bin_push
 	; ident can be alias->reg or const->imm
@@ -618,6 +775,14 @@ parser_parse_stmt:
 	mov [parser_while_count], rax
 	mov r14, rax                     ; while-id (nested while-safe)
 
+	; push while-id to loop stack (for break/continue)
+	mov rbx, [parser_loop_sp]
+	cmp rbx, parser_loop_cap
+	jae parser_err_expected_stmt
+	mov [parser_loop_ids + rbx*8], r14
+	inc rbx
+	mov [parser_loop_sp], rbx
+
 	; emit start label
 	lea rdi, [rel parser_while_label_start_buf]
 	lea rsi, [rel parser_while_start_prefix]
@@ -676,6 +841,57 @@ parser_parse_stmt:
 	lea rdi, [rel parser_while_label_end_buf]
 	mov rsi, rax
 	call emit_label
+
+	; pop loop stack
+	mov rbx, [parser_loop_sp]
+	dec rbx
+	mov [parser_loop_sp], rbx
+	jmp .done
+
+.stmt_break:
+	call lexer_next
+	mov rdi, TOK_SEMI
+	call lexer_expect
+
+	; require inside while
+	mov rbx, [parser_loop_sp]
+	test rbx, rbx
+	jz parser_err_break_outside_loop
+	dec rbx
+	mov r14, [parser_loop_ids + rbx*8]
+
+	; jmp to end label
+	lea rdi, [rel parser_while_label_end_buf]
+	lea rsi, [rel parser_while_end_prefix]
+	mov rdx, parser_while_end_prefix_len
+	mov rcx, r14
+	call parser_build_label_id
+	lea rdi, [rel parser_while_label_end_buf]
+	mov rsi, rax
+	call emit_jmp
+	jmp .done
+
+.stmt_continue:
+	call lexer_next
+	mov rdi, TOK_SEMI
+	call lexer_expect
+
+	; require inside while
+	mov rbx, [parser_loop_sp]
+	test rbx, rbx
+	jz parser_err_continue_outside_loop
+	dec rbx
+	mov r14, [parser_loop_ids + rbx*8]
+
+	; jmp to start label
+	lea rdi, [rel parser_while_label_start_buf]
+	lea rsi, [rel parser_while_start_prefix]
+	mov rdx, parser_while_start_prefix_len
+	mov rcx, r14
+	call parser_build_label_id
+	lea rdi, [rel parser_while_label_start_buf]
+	mov rsi, rax
+	call emit_jmp
 	jmp .done
 .do_shl:
 	call emit_shl_reg_imm
@@ -722,6 +938,8 @@ parser_parse_stmt:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .arg_int
+	cmp rax, TOK_CHAR
+	je .arg_char
 	cmp rax, TOK_REG
 	je .arg_reglike
 	cmp rax, TOK_IDENT
@@ -741,6 +959,20 @@ parser_parse_stmt:
 .arg_int:
 	mov r8, [lexer_tok_ptr]
 	mov r9, [lexer_tok_len]
+	mov rdi, [parser_call_dst_ptr]
+	mov rsi, [parser_call_dst_len]
+	mov rdx, r8
+	mov rcx, r9
+	call emit_mov_reg_imm
+	call lexer_next
+	jmp .arg_after
+
+.arg_char:
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call parser_char_to_imm_slice
+	mov r8, rax
+	mov r9, rdx
 	mov rdi, [parser_call_dst_ptr]
 	mov rsi, [parser_call_dst_len]
 	mov rdx, r8
@@ -988,15 +1220,31 @@ parser_parse_stmt:
 	call lexer_expect
 	call lexer_peek
 	cmp rax, TOK_INT
-	je .s8_int
+	je .s8_intlike
+	cmp rax, TOK_CHAR
+	je .s8_intlike
 	cmp rax, TOK_REG
 	je .s8_reg
 	cmp rax, TOK_IDENT
 	je .s8_ident
 	jmp parser_err_expected_stmt
-.s8_int:
+.s8_intlike:
 	mov r12, [lexer_tok_ptr]
 	mov r13, [lexer_tok_len]
+	cmp rax, TOK_CHAR
+	jne .s8_intlike_have
+	mov rdi, r12
+	mov rsi, r13
+	call parser_char_to_imm_slice
+	mov r12, rax
+	mov r13, rdx
+.s8_intlike_have:
+	; range check 8-bit
+	mov rdi, r12
+	mov rsi, r13
+	call util_parse_u64
+	cmp rax, 0xff
+	ja parser_err_expected_stmt
 	call lexer_next
 	mov rdi, TOK_SEMI
 	call lexer_expect
@@ -1023,6 +1271,12 @@ parser_parse_stmt:
 	; treat as immediate
 	mov r12, rax
 	mov r13, rdx
+	; range check 8-bit
+	mov rdi, r12
+	mov rsi, r13
+	call util_parse_u64
+	cmp rax, 0xff
+	ja parser_err_expected_stmt
 	call lexer_next
 	mov rdi, TOK_SEMI
 	call lexer_expect
@@ -1067,6 +1321,8 @@ parser_parse_stmt:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .s16_intlike
+	cmp rax, TOK_CHAR
+	je .s16_intlike
 	cmp rax, TOK_REG
 	je .s16_reglike
 	cmp rax, TOK_IDENT
@@ -1092,6 +1348,14 @@ parser_parse_stmt:
 	mov r12, [lexer_tok_ptr]
 	mov r13, [lexer_tok_len]
 .s16_intlike_after_slice:
+	cmp rax, TOK_CHAR
+	jne .s16_intlike_after_char
+	mov rdi, r12
+	mov rsi, r13
+	call parser_char_to_imm_slice
+	mov r12, rax
+	mov r13, rdx
+.s16_intlike_after_char:
 	; range check 16-bit
 	mov rdi, r12
 	mov rsi, r13
@@ -1141,11 +1405,20 @@ parser_parse_stmt:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .s32_intlike
+	cmp rax, TOK_CHAR
+	je .s32_char
 	cmp rax, TOK_REG
 	je .s32_reglike
 	cmp rax, TOK_IDENT
 	je .s32_ident
 	jmp parser_err_expected_stmt
+.s32_char:
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call parser_char_to_imm_slice
+	mov r12, rax
+	mov r13, rdx
+	jmp .s32_intlike_after_slice
 .s32_ident:
 	mov rdi, [lexer_tok_ptr]
 	mov rsi, [lexer_tok_len]
@@ -1216,11 +1489,26 @@ parser_parse_stmt:
 	call lexer_peek
 	cmp rax, TOK_INT
 	je .s64_int
+	cmp rax, TOK_CHAR
+	je .s64_char
 	cmp rax, TOK_REG
 	je .s64_reglike
 	cmp rax, TOK_IDENT
 	je .s64_ident
 	jmp parser_err_expected_stmt
+.s64_char:
+	; treat as immediate and enforce signed-32 range like normal imm branch
+	mov rdi, [lexer_tok_ptr]
+	mov rsi, [lexer_tok_len]
+	call parser_char_to_imm_slice
+	mov r12, rax
+	mov r13, rdx
+	mov rdi, r12
+	mov rsi, r13
+	call util_parse_u64
+	cmp rax, 0x7fffffff
+	ja parser_err_store64_imm_too_big
+	jmp .s64_after_val
 .s64_int:
 	; x86-64 has no encoding for `mov qword [mem], imm64`.
 	; NASM will encode imm32 with sign-extension (and warn/truncate).
@@ -1421,6 +1709,16 @@ parser_cc_g_len:  equ $-parser_cc_g
 parser_cc_ge: db "ge"
 parser_cc_ge_len: equ $-parser_cc_ge
 
+; unsigned byte compare jcc
+parser_cc_a:  db "a"
+parser_cc_a_len:  equ $-parser_cc_a
+parser_cc_ae: db "ae"
+parser_cc_ae_len: equ $-parser_cc_ae
+parser_cc_b:  db "b"
+parser_cc_b_len:  equ $-parser_cc_b
+parser_cc_be: db "be"
+parser_cc_be_len: equ $-parser_cc_be
+
 parser_argreg_rdi: db "rdi"
 parser_argreg_rsi: db "rsi"
 parser_argreg_rdx: db "rdx"
@@ -1452,3 +1750,7 @@ parser_if_label_buf: resb 64
 parser_while_count: resq 1
 parser_while_label_start_buf: resb 64
 parser_while_label_end_buf: resb 64
+
+parser_loop_sp: resq 1
+parser_loop_ids: resq 64
+parser_loop_cap: equ 64

@@ -29,6 +29,10 @@ section .text
 %define TOK_KW_CONST 43
 %define TOK_KW_LAYOUT 44
 %define TOK_KW_WHILE 47
+%define TOK_KW_BREAK 48
+%define TOK_KW_CONTINUE 49
+%define TOK_KW_ASM 50
+%define TOK_CHAR  51
 
 ; operators (Stage1: minimal but explicit)
 %define TOK_STAR   20
@@ -139,6 +143,10 @@ lexer_next:
 	; string literal
 	cmp al, '"'
 	je lexer_read_str
+
+	; char literal
+	cmp al, "'"
+	je lexer_read_char
 
 	; integer literal
 	cmp al, '0'
@@ -510,6 +518,75 @@ lexer_read_str:
 	mov rax, TOK_STR
 	ret
 
+lexer_read_char:
+	; token slice excludes surrounding quotes, but may include a 2-byte escape like \n
+	mov r8, [lexer_idx]          ; points at opening '\''
+	mov r9, [lexer_line]
+	mov rdi, [lexer_buf_ptr]
+	mov r10, [lexer_buf_len]
+
+	; need at least: '\'' <char> '\''
+	lea rcx, [r8 + 2]
+	cmp rcx, r10
+	jae lexer_err_bad_char
+
+	lea r11, [r8 + 1]            ; start after opening quote
+	mov al, [rdi + r11]
+	cmp al, 10                   ; raw newline not allowed
+	je lexer_err_bad_char
+
+	; handle escape
+	cmp al, 92
+	jne .one_char
+	; '\\' <esc>
+	lea rcx, [r8 + 3]
+	cmp rcx, r10
+	jae lexer_err_bad_char
+	mov al, [rdi + r8 + 2]
+	cmp al, 92
+	je .esc_ok
+	cmp al, "'"
+	je .esc_ok
+	cmp al, 'n'
+	je .esc_ok
+	cmp al, 't'
+	je .esc_ok
+	jmp lexer_err_bad_char
+.esc_ok:
+	; expect closing quote at r8+3
+	mov al, [rdi + r8 + 3]
+	cmp al, "'"
+	jne lexer_err_bad_char
+	; slice is 2 bytes: "\\<esc>"
+	mov rcx, r11
+	; advance lexer_idx to after closing quote
+	add qword [lexer_idx], 4
+	mov qword [lexer_bol], 0
+	mov rax, [lexer_buf_ptr]
+	add rax, rcx
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 2
+	mov [lexer_tok_line], r9
+	mov qword [lexer_tok_kind], TOK_CHAR
+	mov rax, TOK_CHAR
+	ret
+
+.one_char:
+	; expect closing quote at r8+2
+	mov al, [rdi + r8 + 2]
+	cmp al, "'"
+	jne lexer_err_bad_char
+	add qword [lexer_idx], 3
+	mov qword [lexer_bol], 0
+	mov rax, [lexer_buf_ptr]
+	add rax, r11
+	mov [lexer_tok_ptr], rax
+	mov qword [lexer_tok_len], 1
+	mov [lexer_tok_line], r9
+	mov qword [lexer_tok_kind], TOK_CHAR
+	mov rax, TOK_CHAR
+	ret
+
 ; rdi=expected kind
 lexer_expect:
 	push r12
@@ -771,7 +848,7 @@ lexer_read_ident:
 .ident_layout:
 	; keyword: layout
 	cmp rdx, 6
-	jne .ident_while
+	jne .ident_break
 	cmp byte [rax + 0], 'l'
 	jne .ident_while
 	cmp byte [rax + 1], 'a'
@@ -786,6 +863,62 @@ lexer_read_ident:
 	jne .ident_while
 	mov qword [lexer_tok_kind], TOK_KW_LAYOUT
 	mov rax, TOK_KW_LAYOUT
+	ret
+
+.ident_break:
+	; keyword: break
+	cmp rdx, 5
+	jne .ident_continue
+	cmp byte [rax + 0], 'b'
+	jne .ident_continue
+	cmp byte [rax + 1], 'r'
+	jne .ident_continue
+	cmp byte [rax + 2], 'e'
+	jne .ident_continue
+	cmp byte [rax + 3], 'a'
+	jne .ident_continue
+	cmp byte [rax + 4], 'k'
+	jne .ident_continue
+	mov qword [lexer_tok_kind], TOK_KW_BREAK
+	mov rax, TOK_KW_BREAK
+	ret
+
+.ident_continue:
+	; keyword: continue
+	cmp rdx, 8
+	jne .ident_asm
+	cmp byte [rax + 0], 'c'
+	jne .ident_asm
+	cmp byte [rax + 1], 'o'
+	jne .ident_asm
+	cmp byte [rax + 2], 'n'
+	jne .ident_asm
+	cmp byte [rax + 3], 't'
+	jne .ident_asm
+	cmp byte [rax + 4], 'i'
+	jne .ident_asm
+	cmp byte [rax + 5], 'n'
+	jne .ident_asm
+	cmp byte [rax + 6], 'u'
+	jne .ident_asm
+	cmp byte [rax + 7], 'e'
+	jne .ident_asm
+	mov qword [lexer_tok_kind], TOK_KW_CONTINUE
+	mov rax, TOK_KW_CONTINUE
+	ret
+
+.ident_asm:
+	; keyword: asm
+	cmp rdx, 3
+	jne .ident_while
+	cmp byte [rax + 0], 'a'
+	jne .ident_while
+	cmp byte [rax + 1], 's'
+	jne .ident_while
+	cmp byte [rax + 2], 'm'
+	jne .ident_while
+	mov qword [lexer_tok_kind], TOK_KW_ASM
+	mov rax, TOK_KW_ASM
 	ret
 
 .ident_while:
